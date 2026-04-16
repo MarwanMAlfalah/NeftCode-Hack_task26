@@ -11,6 +11,7 @@ RAW_DIR = DATA_DIR / "raw"
 INTERIM_DIR = DATA_DIR / "interim"
 PROCESSED_DIR = DATA_DIR / "processed"
 OUTPUTS_DIR = PROJECT_ROOT / "outputs"
+CV_OUTPUTS_DIR = OUTPUTS_DIR / "cv"
 REPORTS_DIR = OUTPUTS_DIR / "reports"
 
 TRAIN_MIXTURES_FILENAME = "daimler_mixtures_train.csv"
@@ -94,3 +95,10 @@ TRAIN_SCENARIO_FEATURES_OUTPUT_PATH = PROCESSED_DIR / "train_scenario_features.c
 TEST_SCENARIO_FEATURES_OUTPUT_PATH = PROCESSED_DIR / "test_scenario_features.csv"
 FEATURE_MANIFEST_OUTPUT_PATH = PROCESSED_DIR / "feature_manifest.json"
 PREPROCESSING_AUDIT_OUTPUT_PATH = REPORTS_DIR / "preprocessing_audit.md"
+BASELINE_CV_RESULTS_OUTPUT_PATH = CV_OUTPUTS_DIR / "baseline_cv_results.csv"
+BASELINE_FOLD_METRICS_OUTPUT_PATH = CV_OUTPUTS_DIR / "baseline_fold_metrics.csv"
+BASELINE_REPORT_OUTPUT_PATH = REPORTS_DIR / "baseline_report.md"
+BASELINE_ABLATION_RESULTS_OUTPUT_PATH = CV_OUTPUTS_DIR / "baseline_ablation_results.csv"
+BASELINE_ABLATION_REPORT_OUTPUT_PATH = REPORTS_DIR / "baseline_ablation_report.md"
+
+RANDOM_SEED = 42
