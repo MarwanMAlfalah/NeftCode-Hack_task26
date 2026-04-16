@@ -100,5 +100,8 @@ BASELINE_FOLD_METRICS_OUTPUT_PATH = CV_OUTPUTS_DIR / "baseline_fold_metrics.csv"
 BASELINE_REPORT_OUTPUT_PATH = REPORTS_DIR / "baseline_report.md"
 BASELINE_ABLATION_RESULTS_OUTPUT_PATH = CV_OUTPUTS_DIR / "baseline_ablation_results.csv"
 BASELINE_ABLATION_REPORT_OUTPUT_PATH = REPORTS_DIR / "baseline_ablation_report.md"
+DEEP_SETS_CV_RESULTS_OUTPUT_PATH = CV_OUTPUTS_DIR / "deep_sets_cv_results.csv"
+DEEP_SETS_FOLD_METRICS_OUTPUT_PATH = CV_OUTPUTS_DIR / "deep_sets_fold_metrics.csv"
+DEEP_SETS_REPORT_OUTPUT_PATH = REPORTS_DIR / "deep_sets_report.md"
 
 RANDOM_SEED = 42
