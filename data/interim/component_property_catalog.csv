@@ -1,0 +1,78 @@
+property_key,property_name,property_unit
+prop__aktivnyi_azot_kislorod_pct_mass_n_ili_o,"Активный Азот / Кислород, % масс. (N или O)",
+prop__anilinovaya_tochka,Анилиновая точка,
+prop__atomnoe_otnoshenie_p_zn,Атомное отношение P:Zn,
+prop__coc_c,COC (°C),
+prop__deaeratsiya_astm_d3427_min,Деаэрация | ASTM D3427,мин
+prop__deem_emulsiya_astm_d1401_ml,Деэм.эмульсия | ASTM D1401,мл
+prop__deem_maslo_astm_d1401_ml,Деэм.масло | ASTM D1401,мл
+prop__deem_voda_astm_d1401_ml,Деэм.вода | ASTM D1401,мл
+prop__deem_vremya_astm_d1401_min,Деэм.время | ASTM D1401,мин
+prop__dinamicheskaya_vyazkost_ccs_15_c_astm_d5293_mpa_s,"Динамическая вязкость CCS -15°C, ASTM D5293",мПа*с
+prop__dinamicheskaya_vyazkost_ccs_20_c_astm_d5293_mpa_s,"Динамическая вязкость CCS -20°C, ASTM D5293",мПа*с
+prop__dinamicheskaya_vyazkost_ccs_25_c_astm_d5293_mpa_s,"Динамическая вязкость CCS -25°C, ASTM D5293",мПа*с
+prop__dinamicheskaya_vyazkost_ccs_30_c_astm_d5293_mpa_s,"Динамическая вязкость CCS -30°C, ASTM D5293",мПа*с
+prop__dinamicheskaya_vyazkost_ccs_35_c_astm_d5293_mpa_s,"Динамическая вязкость CCS -35°C, ASTM D5293",мПа*с
+prop__dipolnyi_moment_d,"Дипольный момент, Д",
+prop__dlina_uglerodnoi_tsepi,Длина углеродной цепи,
+prop__energiya_dissotsiatsii_svyazi_h_n_kkal_mol,"Энергия диссоциации связи Х-Н, ккал/моль",
+prop__energiya_nsmo_ev,"Энергия НСМО, эВ",
+prop__energiya_vzmo_ev,"Энергия ВЗМО, эВ",
+prop__gruppa_po_api,Группа по API,
+prop__himicheskii_potentsial_dzh_mol,"Химический потенциал, Дж/моль",
+prop__indeks_polidispersnosti,Индекс полидисперсности,
+prop__indeks_stabilnosti_pct,"Индекс стабильности, %",
+prop__indeks_vyazkosti_gost_25371,"Индекс вязкости, ГОСТ 25371",-
+prop__indeks_vyazkosti_gost_25371_2,"Индекс вязкости, ГОСТ 25371",–
+prop__isparyaemost_po_noack_astm_d5800_pct,"Испаряемость по NOACK, ASTM D5800",%
+prop__isparyaemost_po_noack_astm_d5800_pct_mass,"Испаряемость по NOACK, ASTM D5800",% масс
+prop__kinematicheskaya_vyazkost,Кинематическая вязкость,
+prop__kinematicheskaya_vyazkost_pri_100_c_astm_d445_mm2_s,"Кинематическая вязкость, при 100°C, ASTM D445",мм²/с
+prop__kinematicheskaya_vyazkost_pri_300s_astm_d445_mm2_s,"Кинематическая вязкость, при -30⁰С | ASTM D445",мм²/с
+prop__kinematicheskaya_vyazkost_pri_40_c_astm_d445_mm2_s,"Кинематическая вязкость, при 40°C, ASTM D445",мм²/с
+prop__kislotnoe_chislo_gost_11362_mg_koh_g,"Кислотное число, ГОСТ 11362",мг KOH/г
+prop__massa_gidrofobnogo_hvosta_g_mol,"Масса гидрофобного хвоста, г/моль",
+prop__massovaya_dolya_fosfora_astm_d6481_pct_mass,Массовая доля фосфора | ASTM D6481,% масс
+prop__massovaya_dolya_fosfora_astm_d6481_pct_mass_2,"Массовая доля фосфора, ASTM D6481",% масс
+prop__massovaya_dolya_kaltsiya_astm_d6481_pct_mass,Массовая доля кальция | ASTM D6481,% масс
+prop__massovaya_dolya_kaltsiya_astm_d6481_pct_mass_2,"Массовая доля кальция, ASTM D6481",% масс
+prop__massovaya_dolya_sery_astm_d6481_pct_mass,Массовая доля серы | ASTM D6481,% масс
+prop__massovaya_dolya_sery_astm_d6481_pct_mass_2,"Массовая доля серы, ASTM D6481",% масс
+prop__massovaya_dolya_sulfatnoi_zoly_gost_12417_pct,"Массовая доля сульфатной золы, ГОСТ 12417",%
+prop__massovaya_dolya_tsinka_astm_d6481_pct_mass,Массовая доля цинка | ASTM D6481,% масс
+prop__massovaya_dolya_tsinka_astm_d6481_pct_mass_2,"Массовая доля цинка, ASTM D6481",% масс
+prop__obschee_soderzhanie_azota_astm_d3228_pct,Общее содержание азота | ASTM D3228,%
+prop__opredelenie_soderzhaniya_vody_metodom_karla_fishera_astm_d_6304_ppm,Определение содержания воды методом Карла Фишера | ASTM D 6304,ppm
+prop__otnoshenie_mylo_osnovanie,Отношение Мыло/Основание,
+prop__otnoshenie_s_mo,Отношение S:Mo,
+prop__pct_mass_mo,% масс. (Mo),
+prop__plotnost_pri_15_s_astm_d4052_g_sm3,"Плотность при 15°С, ASTM D4052",г/см³
+prop__plotnost_pri_15_s_astm_d4052_kg_m3,"Плотность при 15°С, ASTM D4052",кг/м³
+prop__plotnost_pri_20_s_astm_d4052_kg_m3,"Плотность при 20°С, ASTM D4052",кг/м³
+prop__posledovatelnost_1_astm_d892_sm3,Последовательность 1 | ASTM D892,см³
+prop__posledovatelnost_2_astm_d892_sm3,Последовательность 2 | ASTM D892,см³
+prop__posledovatelnost_3_astm_d892_sm3,Последовательность 3 | ASTM D892,см³
+prop__potentsial_ionizatsii_ev,"Потенциал ионизации,эВ",
+prop__razmer_mitsell_nm,"Размер мицелл, нм",
+prop__schelochnoe_chislo_astm_d2896_mg_koh_g,"Щелочное число, ASTM D2896",мг KOH/г
+prop__schelochnoe_chislo_gost_11362_mg_koh_g,"Щелочное число, ГОСТ 11362",мг KOH/г
+prop__soderzhanie_azota,Содержание Азота,
+prop__soderzhanie_bora,Содержание Бора,
+prop__soderzhanie_masla,Содержание масла,
+prop__soderzhanie_masla_pct_mass,"Содержание масла, % масс.",
+prop__soderzhanie_metalla_ca_mg_pct_mass,"Содержание металла (Ca/Mg), % масс.",
+prop__soderzhanie_mgco3_caco3_pct_mass,"Содержание MgCO3, CaCO3, % масс.",
+prop__soderzhanie_myla_pct_mass,"Содержание мыла, % масс.",
+prop__soderzhanie_polimera,Содержание полимера,
+prop__soderzhanie_sery_mg_kg,"Содержание серы, мг/кг",
+prop__soderzhanie_sery_pct_mass,"Содержание серы, % масс.",
+prop__soderzhanie_vody_pct_mass,"Содержание воды, % масс.",
+prop__sootnoshenie_monomerov_eo_po,Соотношение мономеров (EO:PO),
+prop__srednevesovaya_massa,Средневесовая масса,
+prop__stepen_polisulfidnosti,Степень полисульфидности,
+prop__stericheskii_faktor_a3,"Стерический фактор, Å3",
+prop__temperatura_plavleniya_c,"Температура плавления, °C",
+prop__temperatura_provedeniya_testa_c,Температура проведения теста | -,°C
+prop__temperatura_zastyvaniya_gost_20287_metod_b_c,"Температура застывания, ГОСТ 20287, метод Б",°C
+prop__tsvet_astm_d1500_ed,Цвет | ASTM D1500,ед.
+prop__tsvet_seibolt_ed,Цвет Сейболт | -,ед.

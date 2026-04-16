@@ -1,0 +1,17 @@
+{
+  "coverage_flags": [
+    "used_exact_batch_props",
+    "used_typical_fallback",
+    "missing_all_props",
+    "has_usable_property_coverage",
+    "property_join_source"
+  ],
+  "missing_batch_id_policy": {
+    "behavior": "missing batch IDs are normalized to an explicit token; exact matches are attempted first, then typical values fill property-level gaps",
+    "normalized_token": "__missing_batch__"
+  },
+  "property_join_order": [
+    "exact_component_batch",
+    "component_typical_fallback"
+  ]
+}

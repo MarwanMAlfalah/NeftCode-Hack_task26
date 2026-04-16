@@ -1,0 +1,96 @@
+"""Project-wide configuration for deterministic data preparation."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DATA_DIR = PROJECT_ROOT / "data"
+RAW_DIR = DATA_DIR / "raw"
+INTERIM_DIR = DATA_DIR / "interim"
+PROCESSED_DIR = DATA_DIR / "processed"
+OUTPUTS_DIR = PROJECT_ROOT / "outputs"
+REPORTS_DIR = OUTPUTS_DIR / "reports"
+
+TRAIN_MIXTURES_FILENAME = "daimler_mixtures_train.csv"
+TEST_MIXTURES_FILENAME = "daimler_mixtures_test.csv"
+COMPONENT_PROPERTIES_FILENAME = "daimler_component_properties.csv"
+
+TRAIN_MIXTURES_PATH = RAW_DIR / TRAIN_MIXTURES_FILENAME
+TEST_MIXTURES_PATH = RAW_DIR / TEST_MIXTURES_FILENAME
+COMPONENT_PROPERTIES_PATH = RAW_DIR / COMPONENT_PROPERTIES_FILENAME
+
+TYPICAL_BATCH_ID = "typical"
+MISSING_BATCH_ID_TOKEN = "__missing_batch__"
+
+MIXTURE_COLUMN_RENAMES = {
+    "scenario_id": "scenario_id",
+    "Компонент": "component_id",
+    "Наименование партии": "batch_id",
+    "Массовая доля, %": "mass_fraction_pct",
+    "Температура испытания | ASTM D445 Daimler Oxidation Test (DOT), °C": "test_temperature_c",
+    "Время испытания | - Daimler Oxidation Test (DOT), ч": "test_duration_h",
+    "Количество биотоплива | - Daimler Oxidation Test (DOT), % масс": "biofuel_mass_fraction_pct",
+    "Дозировка катализатора, категория": "catalyst_dosage_category",
+}
+
+TRAIN_TARGET_COLUMN_RENAMES = {
+    "Delta Kin. Viscosity KV100 - relative | - Daimler Oxidation Test (DOT), %": "target_delta_kinematic_viscosity_pct",
+    "Oxidation EOT | DIN 51453 Daimler Oxidation Test (DOT), A/cm": "target_oxidation_eot_a_per_cm",
+}
+
+PROPERTY_COLUMN_RENAMES = {
+    "Компонент": "component_id",
+    "Наименование партии": "batch_id",
+    "Наименование показателя": "property_name",
+    "Единица измерения_по_партиям": "property_unit",
+    "Значение показателя": "property_value",
+}
+
+MIXTURE_NUMERIC_COLUMNS = [
+    "mass_fraction_pct",
+    "test_temperature_c",
+    "test_duration_h",
+    "biofuel_mass_fraction_pct",
+]
+
+TRAIN_TARGET_COLUMNS = [
+    "target_delta_kinematic_viscosity_pct",
+    "target_oxidation_eot_a_per_cm",
+]
+
+SCENARIO_CONDITION_COLUMNS = [
+    "test_temperature_c",
+    "test_duration_h",
+    "biofuel_mass_fraction_pct",
+    "catalyst_dosage_category",
+]
+
+MIXTURE_ID_COLUMNS = [
+    "scenario_id",
+    "component_id",
+    "batch_id",
+]
+
+PROPERTY_ID_COLUMNS = [
+    "component_id",
+    "batch_id",
+]
+
+PROPERTY_LONG_OUTPUT_PATH = INTERIM_DIR / "component_properties_clean.csv"
+PROPERTY_CATALOG_OUTPUT_PATH = INTERIM_DIR / "component_property_catalog.csv"
+PROPERTY_PIVOT_ALL_OUTPUT_PATH = INTERIM_DIR / "component_properties_pivot_all.csv"
+PROPERTY_EXACT_OUTPUT_PATH = INTERIM_DIR / "component_properties_lookup_exact.csv"
+PROPERTY_TYPICAL_OUTPUT_PATH = INTERIM_DIR / "component_properties_lookup_typical.csv"
+
+TRAIN_NORMALIZED_OUTPUT_PATH = INTERIM_DIR / "mixtures_train_normalized.csv"
+TEST_NORMALIZED_OUTPUT_PATH = INTERIM_DIR / "mixtures_test_normalized.csv"
+TRAIN_JOINED_OUTPUT_PATH = INTERIM_DIR / "mixtures_train_with_properties.csv"
+TEST_JOINED_OUTPUT_PATH = INTERIM_DIR / "mixtures_test_with_properties.csv"
+
+TRAIN_TARGETS_OUTPUT_PATH = PROCESSED_DIR / "train_scenario_targets.csv"
+TRAIN_SCENARIO_FEATURES_OUTPUT_PATH = PROCESSED_DIR / "train_scenario_features.csv"
+TEST_SCENARIO_FEATURES_OUTPUT_PATH = PROCESSED_DIR / "test_scenario_features.csv"
+FEATURE_MANIFEST_OUTPUT_PATH = PROCESSED_DIR / "feature_manifest.json"
+PREPROCESSING_AUDIT_OUTPUT_PATH = REPORTS_DIR / "preprocessing_audit.md"
