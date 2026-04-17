@@ -22,7 +22,11 @@ from src.config import (
     TRAIN_JOINED_OUTPUT_PATH,
     TRAIN_SCENARIO_FEATURES_OUTPUT_PATH,
 )
-from src.eval.metrics import compute_target_scales, evaluate_regression_predictions
+from src.eval.metrics import (
+    compute_target_scales,
+    evaluate_platform_proxy_predictions,
+    evaluate_regression_predictions,
+)
 from src.features.build_scenario_features import run_feature_pipeline
 from src.data.prepare_properties import run_preparation_pipeline
 from src.models.deep_sets import (
@@ -75,6 +79,7 @@ class DeepSetsConfig:
     tabular_hidden_dim: int = 32
     fusion_hidden_dim: int = 64
     dropout: float = 0.10
+    checkpoint_metric: str = "combined_score"
 
 
 @dataclass(frozen=True)
@@ -92,7 +97,9 @@ class LossConfig:
 
     name: str
     use_robust_viscosity_loss: bool
+    use_robust_oxidation_loss: bool = False
     viscosity_delta: float = 1.0
+    oxidation_delta: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -125,6 +132,7 @@ class FitArtifacts:
     best_epoch: int
     best_val_loss: float
     best_val_combined_score: float
+    best_val_platform_proxy_score: float
     train_history: list[dict[str, float]]
 
 
@@ -184,6 +192,14 @@ def get_target_strategy_by_name(target_strategy_name: str):
         if strategy.name == target_strategy_name:
             return strategy
     raise KeyError(f"Unknown target strategy: {target_strategy_name}")
+
+
+def _materialize_target_strategy(target_strategy: Any, y_train_raw: np.ndarray) -> Any:
+    """Fit a fold-local target strategy when the strategy requires training data."""
+
+    if hasattr(target_strategy, "fit_from_training_targets"):
+        return target_strategy.fit_from_training_targets(y_train_raw)
+    return target_strategy
 
 
 def load_tabular_feature_columns(
@@ -291,11 +307,14 @@ def _move_batch_to_device(batch: dict[str, torch.Tensor], device: torch.device) 
 def _build_training_loss(loss_config: LossConfig):
     """Build the requested mixed loss for viscosity and oxidation."""
 
-    oxidation_loss = torch.nn.MSELoss()
     if loss_config.use_robust_viscosity_loss:
         viscosity_loss = torch.nn.HuberLoss(delta=loss_config.viscosity_delta)
     else:
         viscosity_loss = torch.nn.MSELoss()
+    if loss_config.use_robust_oxidation_loss:
+        oxidation_loss = torch.nn.HuberLoss(delta=loss_config.oxidation_delta)
+    else:
+        oxidation_loss = torch.nn.MSELoss()
 
     def _loss_fn(predictions: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
         viscosity = viscosity_loss(predictions[:, 0], targets[:, 0])
@@ -382,6 +401,7 @@ def fit_deep_sets_model(
     best_epoch = 0
     best_val_loss = float("inf")
     best_val_combined_score = float("inf")
+    best_val_platform_proxy_score = float("inf")
     epochs_without_improvement = 0
     history: list[dict[str, float]] = []
 
@@ -415,19 +435,34 @@ def fit_deep_sets_model(
             target_names=TARGET_COLUMNS,
             target_scales=target_scales,
         )
+        platform_metrics = evaluate_platform_proxy_predictions(
+            y_true=raw_inner_valid_targets,
+            y_pred=val_predictions_raw,
+            target_names=TARGET_COLUMNS,
+            target_scales=target_scales,
+        )
         val_combined_score = float(val_metrics["combined_score"])
+        val_platform_proxy_score = float(platform_metrics["platform_proxy_score"])
+        if config.checkpoint_metric == "platform_proxy_score":
+            selection_score = val_platform_proxy_score
+        else:
+            selection_score = val_combined_score
         history.append(
             {
                 "epoch": float(epoch),
                 "train_loss": train_loss,
                 "val_loss": val_loss,
                 "val_combined_score": val_combined_score,
+                "val_platform_proxy_score": val_platform_proxy_score,
             }
         )
 
-        if val_combined_score + config.min_delta < best_val_combined_score:
+        if selection_score + config.min_delta < (
+            best_val_platform_proxy_score if config.checkpoint_metric == "platform_proxy_score" else best_val_combined_score
+        ):
             best_val_loss = val_loss
             best_val_combined_score = val_combined_score
+            best_val_platform_proxy_score = val_platform_proxy_score
             best_epoch = epoch
             best_state_dict = deepcopy(model.state_dict())
             epochs_without_improvement = 0
@@ -444,6 +479,7 @@ def fit_deep_sets_model(
         best_epoch=best_epoch,
         best_val_loss=best_val_loss,
         best_val_combined_score=best_val_combined_score,
+        best_val_platform_proxy_score=best_val_platform_proxy_score,
         train_history=history,
     )
 
@@ -516,7 +552,10 @@ def train_full_deep_sets_variant_ensemble_and_predict(
 
     config = config or DeepSetsConfig()
     seeds = seeds or [0, 1, 2, 3, 4]
-    target_strategy = get_target_strategy_by_name(target_strategy_name)
+    target_strategy = _materialize_target_strategy(
+        get_target_strategy_by_name(target_strategy_name),
+        np.asarray(prepared_data.train_data.targets, dtype=np.float32),
+    )
 
     train_data = prepared_data.train_data.with_targets(
         target_strategy.transform(prepared_data.train_data.targets).astype(np.float32)
@@ -592,12 +631,13 @@ def evaluate_single_deep_sets_configuration(
         y_train_raw = raw_train_fold.targets.astype(np.float32)
         y_valid_raw = raw_valid_fold.targets.astype(np.float32)
         target_scales = compute_target_scales(y_train_raw, TARGET_COLUMNS)
+        fitted_target_strategy = _materialize_target_strategy(target_strategy, y_train_raw)
 
         transformed_train_fold = raw_train_fold.with_targets(
-            target_strategy.transform(y_train_raw).astype(np.float32)
+            fitted_target_strategy.transform(y_train_raw).astype(np.float32)
         )
         transformed_valid_fold = raw_valid_fold.with_targets(
-            target_strategy.transform(y_valid_raw).astype(np.float32)
+            fitted_target_strategy.transform(y_valid_raw).astype(np.float32)
         )
 
         start_time = time.perf_counter()
@@ -607,7 +647,7 @@ def evaluate_single_deep_sets_configuration(
             schema=prepared_data.schema,
             config=config,
             variant=variant,
-            target_strategy=target_strategy,
+            target_strategy=fitted_target_strategy,
             raw_targets=y_train_raw,
             seed=seed + fold_index,
             loss_config=loss_config,
@@ -624,7 +664,7 @@ def evaluate_single_deep_sets_configuration(
             batch_size=config.batch_size,
             device=device,
         )
-        valid_predictions_raw = target_strategy.inverse_transform(valid_predictions_transformed)
+        valid_predictions_raw = fitted_target_strategy.inverse_transform(valid_predictions_transformed)
         metrics = evaluate_regression_predictions(
             y_true=y_valid_raw,
             y_pred=valid_predictions_raw,
@@ -711,6 +751,7 @@ def _serialize_training_metadata(
         "best_epoch": fit_artifacts.best_epoch,
         "best_val_loss": fit_artifacts.best_val_loss,
         "best_val_combined_score": fit_artifacts.best_val_combined_score,
+        "best_val_platform_proxy_score": fit_artifacts.best_val_platform_proxy_score,
     }
     return json.dumps(payload, sort_keys=True)
 

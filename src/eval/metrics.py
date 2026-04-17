@@ -77,3 +77,40 @@ def evaluate_regression_predictions(
         np.mean([metrics[f"{target_name}__r2"] for target_name in target_names])
     )
     return metrics
+
+
+def evaluate_platform_proxy_predictions(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    target_names: Iterable[str],
+    target_scales: dict[str, float],
+) -> dict[str, float]:
+    """Compute an MAE-based platform-style proxy using fold-local target scales.
+
+    The original platform formula is not stored in this repository, so this proxy
+    uses the mean of per-target MAE values normalized by the training-fold IQR.
+    This preserves the intended emphasis on MAE while keeping targets comparable.
+    """
+
+    y_true_array = _as_2d_array(y_true)
+    y_pred_array = np.nan_to_num(
+        _as_2d_array(y_pred),
+        nan=0.0,
+        posinf=1e6,
+        neginf=-1e6,
+    )
+    y_pred_array = np.clip(y_pred_array, -1e6, 1e6)
+
+    metrics: dict[str, float] = {}
+    normalized_mae: list[float] = []
+    for index, target_name in enumerate(target_names):
+        true_column = y_true_array[:, index]
+        pred_column = y_pred_array[:, index]
+        mae = float(mean_absolute_error(true_column, pred_column))
+        nmae = mae / target_scales[target_name]
+        metrics[f"{target_name}__platform_mae_proxy"] = mae
+        metrics[f"{target_name}__platform_nmae_iqr"] = nmae
+        normalized_mae.append(nmae)
+
+    metrics["platform_proxy_score"] = float(np.mean(normalized_mae))
+    return metrics
