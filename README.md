@@ -116,3 +116,29 @@ The bind-mounted submission file will appear in:
 4. Trains the winning `hybrid_deep_sets_v2_family_only / raw` model as a 5-seed ensemble.
 5. Predicts one row per test `scenario_id`.
 6. Validates the output schema and writes `outputs/predictions.csv` in UTF-8.
+
+## Final Packaging
+
+After `outputs/predictions.csv` is regenerated, create the upload-ready bundle with:
+
+```bash
+python3 scripts/package_submission.py
+```
+
+This writes an ASCII-safe ZIP to:
+
+```text
+outputs/submissions/neftekod_dot_submission_final.zip
+```
+
+To re-check the final ZIP structure without rebuilding it:
+
+```bash
+python3 scripts/package_submission.py --validate-only
+```
+
+An optional clean-run regeneration check is also available:
+
+```bash
+python3 scripts/clean_run_check.py
+```
