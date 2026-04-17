@@ -77,6 +77,7 @@ class ScenarioTensorData:
     catalyst_ids: np.ndarray
     tabular_features: np.ndarray | None = None
     targets: np.ndarray | None = None
+    sample_weights: np.ndarray | None = None
 
     def subset(self, indices: Sequence[int]) -> "ScenarioTensorData":
         """Return a scenario subset without mutating the source arrays."""
@@ -86,6 +87,7 @@ class ScenarioTensorData:
         if self.tabular_features is not None:
             tabular_features = self.tabular_features[array_indices].copy()
         targets = None if self.targets is None else self.targets[array_indices].copy()
+        sample_weights = None if self.sample_weights is None else self.sample_weights[array_indices].copy()
         return ScenarioTensorData(
             scenario_ids=self.scenario_ids[array_indices].copy(),
             family_ids=self.family_ids[array_indices].copy(),
@@ -99,6 +101,7 @@ class ScenarioTensorData:
             catalyst_ids=self.catalyst_ids[array_indices].copy(),
             tabular_features=tabular_features,
             targets=targets,
+            sample_weights=sample_weights,
         )
 
     def with_targets(self, targets: np.ndarray | None) -> "ScenarioTensorData":
@@ -117,6 +120,7 @@ class ScenarioTensorData:
             catalyst_ids=self.catalyst_ids.copy(),
             tabular_features=None if self.tabular_features is None else self.tabular_features.copy(),
             targets=None if targets is None else np.asarray(targets, dtype=np.float32).copy(),
+            sample_weights=None if self.sample_weights is None else self.sample_weights.copy(),
         )
 
     def with_tabular_features(self, tabular_features: np.ndarray | None) -> "ScenarioTensorData":
@@ -135,6 +139,26 @@ class ScenarioTensorData:
             catalyst_ids=self.catalyst_ids.copy(),
             tabular_features=None if tabular_features is None else np.asarray(tabular_features, dtype=np.float32).copy(),
             targets=None if self.targets is None else self.targets.copy(),
+            sample_weights=None if self.sample_weights is None else self.sample_weights.copy(),
+        )
+
+    def with_sample_weights(self, sample_weights: np.ndarray | None) -> "ScenarioTensorData":
+        """Return a copy with scenario-level sample weights attached."""
+
+        return ScenarioTensorData(
+            scenario_ids=self.scenario_ids.copy(),
+            family_ids=self.family_ids.copy(),
+            component_ids=self.component_ids.copy(),
+            mass_fraction=self.mass_fraction.copy(),
+            property_values=self.property_values.copy(),
+            property_mask=self.property_mask.copy(),
+            component_flags=self.component_flags.copy(),
+            component_mask=self.component_mask.copy(),
+            conditions=self.conditions.copy(),
+            catalyst_ids=self.catalyst_ids.copy(),
+            tabular_features=None if self.tabular_features is None else self.tabular_features.copy(),
+            targets=None if self.targets is None else self.targets.copy(),
+            sample_weights=None if sample_weights is None else np.asarray(sample_weights, dtype=np.float32).copy(),
         )
 
     def __len__(self) -> int:
@@ -237,6 +261,7 @@ class FeatureNormalizer:
             catalyst_ids=data.catalyst_ids.copy(),
             tabular_features=tabular_features,
             targets=None if data.targets is None else data.targets.astype(np.float32).copy(),
+            sample_weights=None if data.sample_weights is None else data.sample_weights.astype(np.float32).copy(),
         )
 
 
@@ -455,6 +480,7 @@ def build_scenario_tensor_data(
         catalyst_ids=catalyst_ids,
         tabular_features=None,
         targets=targets,
+        sample_weights=None,
     )
 
 
@@ -483,6 +509,8 @@ class ScenarioDataset(Dataset):
             item["tabular_features"] = torch.as_tensor(self.data.tabular_features[index], dtype=torch.float32)
         if self.data.targets is not None:
             item["targets"] = torch.as_tensor(self.data.targets[index], dtype=torch.float32)
+        if self.data.sample_weights is not None:
+            item["sample_weight"] = torch.as_tensor(self.data.sample_weights[index], dtype=torch.float32)
         return item
 
 

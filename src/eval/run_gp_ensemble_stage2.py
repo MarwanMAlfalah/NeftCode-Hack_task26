@@ -284,11 +284,13 @@ def _fit_target_ridgecv(
     inner_splits = max(2, min(5, len(np.unique(groups))))
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(X_train)
+    grouped_cv = GroupKFold(n_splits=inner_splits)
+    cv_splits = list(grouped_cv.split(X_scaled, y_train.to_numpy(dtype=float), groups=np.asarray(groups, dtype=object)))
     model = RidgeCV(
         alphas=RIDGE_ALPHA_GRID,
-        cv=GroupKFold(n_splits=inner_splits),
+        cv=cv_splits,
     )
-    model.fit(X_scaled, y_train.to_numpy(dtype=float), groups=np.asarray(groups, dtype=object))
+    model.fit(X_scaled, y_train.to_numpy(dtype=float))
     return scaler, model
 
 

@@ -101,6 +101,7 @@ class LossConfig:
     use_robust_oxidation_loss: bool = False
     viscosity_delta: float = 1.0
     oxidation_delta: float = 1.0
+    sample_weight_scheme: str = "none"
 
 
 @dataclass(frozen=True)
@@ -310,20 +311,57 @@ def _build_training_loss(loss_config: LossConfig):
     """Build the requested mixed loss for viscosity and oxidation."""
 
     if loss_config.use_robust_viscosity_loss:
-        viscosity_loss = torch.nn.HuberLoss(delta=loss_config.viscosity_delta)
+        viscosity_loss = torch.nn.HuberLoss(delta=loss_config.viscosity_delta, reduction="none")
     else:
-        viscosity_loss = torch.nn.MSELoss()
+        viscosity_loss = torch.nn.MSELoss(reduction="none")
     if loss_config.use_robust_oxidation_loss:
-        oxidation_loss = torch.nn.HuberLoss(delta=loss_config.oxidation_delta)
+        oxidation_loss = torch.nn.HuberLoss(delta=loss_config.oxidation_delta, reduction="none")
     else:
-        oxidation_loss = torch.nn.MSELoss()
+        oxidation_loss = torch.nn.MSELoss(reduction="none")
 
-    def _loss_fn(predictions: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+    def _loss_fn(
+        predictions: torch.Tensor,
+        targets: torch.Tensor,
+        sample_weight: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         viscosity = viscosity_loss(predictions[:, 0], targets[:, 0])
         oxidation = oxidation_loss(predictions[:, 1], targets[:, 1])
-        return viscosity + oxidation
+        combined = viscosity + oxidation
+        if sample_weight is None:
+            return combined.mean()
+
+        weights = sample_weight.reshape(-1).to(dtype=combined.dtype)
+        denominator = torch.clamp(weights.sum(), min=1e-8)
+        return torch.sum(combined * weights) / denominator
 
     return _loss_fn
+
+
+def _build_sample_weights(raw_targets: np.ndarray, loss_config: LossConfig) -> np.ndarray:
+    """Build a light scenario-level sample-weight vector from raw targets only."""
+
+    scheme = loss_config.sample_weight_scheme
+    weights = np.ones(len(raw_targets), dtype=np.float32)
+    if scheme == "none":
+        return weights
+
+    viscosity_values = np.abs(np.asarray(raw_targets[:, 0], dtype=np.float32))
+    oxidation_values = np.abs(np.asarray(raw_targets[:, 1], dtype=np.float32))
+    viscosity_q90 = float(np.quantile(viscosity_values, 0.90))
+    oxidation_q75 = float(np.quantile(oxidation_values, 0.75))
+
+    if scheme == "visc_tail_q90":
+        weights = np.where(viscosity_values >= viscosity_q90, 1.30, 1.00).astype(np.float32)
+    elif scheme == "ox_hard_q75":
+        weights = np.where(oxidation_values >= oxidation_q75, 1.25, 1.00).astype(np.float32)
+    elif scheme == "joint_light":
+        weights += np.where(viscosity_values >= viscosity_q90, 0.20, 0.00).astype(np.float32)
+        weights += np.where(oxidation_values >= oxidation_q75, 0.15, 0.00).astype(np.float32)
+        weights = np.clip(weights, 1.00, 1.35).astype(np.float32)
+    else:
+        raise KeyError(f"Unknown sample-weight scheme: {scheme}")
+
+    return weights
 
 
 def _evaluate_model_outputs(
@@ -343,7 +381,7 @@ def _evaluate_model_outputs(
         for batch in dataloader:
             batch = _move_batch_to_device(batch, device)
             batch_predictions = model(batch)
-            losses.append(float(loss_fn(batch_predictions, batch["targets"]).detach().cpu().item()))
+            losses.append(float(loss_fn(batch_predictions, batch["targets"], batch.get("sample_weight")).detach().cpu().item()))
             predictions.append(batch_predictions.detach().cpu().numpy())
     stacked_predictions = np.vstack(predictions).astype(np.float32) if predictions else np.empty((0, 2), dtype=np.float32)
     return (float(np.mean(losses)) if losses else float("inf"), stacked_predictions)
@@ -383,6 +421,9 @@ def fit_deep_sets_model(
     normalized_inner_valid = normalized_inner_valid.with_targets(
         target_scaler.transform(normalized_inner_valid.targets)
     )
+    normalized_inner_train = normalized_inner_train.with_sample_weights(
+        _build_sample_weights(raw_targets=raw_inner_train_targets, loss_config=loss_config)
+    )
 
     train_loader = build_dataloader(
         data=normalized_inner_train,
@@ -415,7 +456,7 @@ def fit_deep_sets_model(
             batch = _move_batch_to_device(batch, device)
             optimizer.zero_grad(set_to_none=True)
             predictions = model(batch)
-            loss = loss_fn(predictions, batch["targets"])
+            loss = loss_fn(predictions, batch["targets"], batch.get("sample_weight"))
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), config.grad_clip_norm)
             optimizer.step()
