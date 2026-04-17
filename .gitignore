@@ -1,0 +1,61 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+.python-version
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Test / coverage / cache
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Local runtime / logs
+*.log
+*.tmp
+*.temp
+
+# Build / packaging
+build/
+dist/
+*.egg-info/
+
+# Data files
+data/raw/
+data/interim/
+data/processed/
+
+# Outputs / experiment artifacts
+outputs/
+models/
+checkpoints/
+artifacts/
+
+# Ignore generated submission archives
+*.zip
+
+# But keep important project structure files if needed
+!outputs/.gitkeep
+!data/.gitkeep
+!data/raw/.gitkeep
+!data/interim/.gitkeep
+!data/processed/.gitkeep
