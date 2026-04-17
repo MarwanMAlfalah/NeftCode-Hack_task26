@@ -12,6 +12,7 @@ from src.models.deep_sets import (
     DeepSetsRegressor,
     FeatureNormalizer,
     TargetScaler,
+    align_tabular_features,
     build_deep_sets_schema,
     build_scenario_tensor_data,
 )
@@ -82,11 +83,30 @@ def _build_frame(include_targets: bool) -> pd.DataFrame:
 
 
 class DeepSetsShapeTest(unittest.TestCase):
-    def test_tensor_builder_and_model_forward_shapes(self) -> None:
+    def test_tensor_builder_and_hybrid_model_forward_shapes(self) -> None:
         train_frame = _build_frame(include_targets=True)
         test_frame = _build_frame(include_targets=False)
-        schema = build_deep_sets_schema(train_frame=train_frame, test_frame=test_frame)
-        data = build_scenario_tensor_data(train_frame, schema=schema, include_targets=True)
+        tabular_feature_frame = pd.DataFrame(
+            {
+                "scenario_id": ["s1", "s2"],
+                "test_temperature_c": [160.0, 150.0],
+                "component_row_count": [2.0, 1.0],
+                "family__baseoil__mass_share": [0.7, 1.0],
+            }
+        )
+        tabular_columns = ["test_temperature_c", "component_row_count", "family__baseoil__mass_share"]
+        schema = build_deep_sets_schema(
+            train_frame=train_frame,
+            test_frame=test_frame,
+            tabular_feature_columns=tabular_columns,
+        )
+        data = build_scenario_tensor_data(train_frame, schema=schema, include_targets=True).with_tabular_features(
+            align_tabular_features(
+                scenario_ids=np.asarray(["s1", "s2"], dtype=object),
+                feature_frame=tabular_feature_frame,
+                feature_columns=tabular_columns,
+            )
+        )
 
         self.assertEqual(data.family_ids.shape, (2, 2))
         self.assertEqual(data.component_ids.shape, (2, 2))
@@ -95,13 +115,14 @@ class DeepSetsShapeTest(unittest.TestCase):
         self.assertEqual(data.property_mask.shape, (2, 2, 2))
         self.assertEqual(data.component_flags.shape[0:2], (2, 2))
         self.assertEqual(data.conditions.shape, (2, 3))
+        self.assertEqual(data.tabular_features.shape, (2, 3))
         self.assertEqual(data.targets.shape, (2, 2))
 
         normalized = FeatureNormalizer.fit(data).transform(data)
         target_scaler = TargetScaler.fit(normalized.targets)
         normalized = normalized.with_targets(target_scaler.transform(normalized.targets))
 
-        model = DeepSetsRegressor(schema=schema)
+        model = DeepSetsRegressor(schema=schema, use_component_embedding=False, use_tabular_branch=True)
         batch = {
             "family_ids": torch.as_tensor(normalized.family_ids, dtype=torch.long),
             "component_ids": torch.as_tensor(normalized.component_ids, dtype=torch.long),
@@ -112,6 +133,7 @@ class DeepSetsShapeTest(unittest.TestCase):
             "component_mask": torch.as_tensor(normalized.component_mask, dtype=torch.float32),
             "conditions": torch.as_tensor(normalized.conditions, dtype=torch.float32),
             "catalyst_ids": torch.as_tensor(normalized.catalyst_ids, dtype=torch.long),
+            "tabular_features": torch.as_tensor(normalized.tabular_features, dtype=torch.float32),
         }
         predictions = model(batch)
         self.assertEqual(tuple(predictions.shape), (2, 2))

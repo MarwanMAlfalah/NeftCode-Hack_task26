@@ -1,4 +1,4 @@
-"""Compact Deep Sets model and tensor preparation utilities."""
+"""Compact Deep Sets and hybrid tensor utilities."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader, Dataset
 
-from src.config import SCENARIO_CONDITION_COLUMNS, TRAIN_TARGET_COLUMNS
+from src.config import TRAIN_TARGET_COLUMNS
 from src.features.build_scenario_features import extract_component_family, validate_prepared_scenarios
 
 
@@ -42,6 +42,7 @@ class DeepSetsSchema:
     component_to_index: dict[str, int]
     catalyst_to_index: dict[int, int]
     max_components: int
+    tabular_feature_columns: list[str]
 
     @property
     def family_vocab_size(self) -> int:
@@ -54,6 +55,10 @@ class DeepSetsSchema:
     @property
     def catalyst_vocab_size(self) -> int:
         return max(self.catalyst_to_index.values(), default=0) + 1
+
+    @property
+    def tabular_input_dim(self) -> int:
+        return len(self.tabular_feature_columns)
 
 
 @dataclass(frozen=True)
@@ -70,12 +75,16 @@ class ScenarioTensorData:
     component_mask: np.ndarray
     conditions: np.ndarray
     catalyst_ids: np.ndarray
+    tabular_features: np.ndarray | None = None
     targets: np.ndarray | None = None
 
     def subset(self, indices: Sequence[int]) -> "ScenarioTensorData":
         """Return a scenario subset without mutating the source arrays."""
 
         array_indices = np.asarray(indices, dtype=int)
+        tabular_features = None
+        if self.tabular_features is not None:
+            tabular_features = self.tabular_features[array_indices].copy()
         targets = None if self.targets is None else self.targets[array_indices].copy()
         return ScenarioTensorData(
             scenario_ids=self.scenario_ids[array_indices].copy(),
@@ -88,6 +97,7 @@ class ScenarioTensorData:
             component_mask=self.component_mask[array_indices].copy(),
             conditions=self.conditions[array_indices].copy(),
             catalyst_ids=self.catalyst_ids[array_indices].copy(),
+            tabular_features=tabular_features,
             targets=targets,
         )
 
@@ -105,7 +115,26 @@ class ScenarioTensorData:
             component_mask=self.component_mask.copy(),
             conditions=self.conditions.copy(),
             catalyst_ids=self.catalyst_ids.copy(),
+            tabular_features=None if self.tabular_features is None else self.tabular_features.copy(),
             targets=None if targets is None else np.asarray(targets, dtype=np.float32).copy(),
+        )
+
+    def with_tabular_features(self, tabular_features: np.ndarray | None) -> "ScenarioTensorData":
+        """Return a copy with scenario-level tabular features attached."""
+
+        return ScenarioTensorData(
+            scenario_ids=self.scenario_ids.copy(),
+            family_ids=self.family_ids.copy(),
+            component_ids=self.component_ids.copy(),
+            mass_fraction=self.mass_fraction.copy(),
+            property_values=self.property_values.copy(),
+            property_mask=self.property_mask.copy(),
+            component_flags=self.component_flags.copy(),
+            component_mask=self.component_mask.copy(),
+            conditions=self.conditions.copy(),
+            catalyst_ids=self.catalyst_ids.copy(),
+            tabular_features=None if tabular_features is None else np.asarray(tabular_features, dtype=np.float32).copy(),
+            targets=None if self.targets is None else self.targets.copy(),
         )
 
     def __len__(self) -> int:
@@ -114,7 +143,7 @@ class ScenarioTensorData:
 
 @dataclass(frozen=True)
 class FeatureNormalizer:
-    """Fold-local normalization parameters for numeric Deep Sets inputs."""
+    """Fold-local normalization parameters for numeric model inputs."""
 
     mass_mean: float
     mass_std: float
@@ -122,6 +151,8 @@ class FeatureNormalizer:
     property_std: np.ndarray
     condition_mean: np.ndarray
     condition_std: np.ndarray
+    tabular_mean: np.ndarray | None
+    tabular_std: np.ndarray | None
 
     @classmethod
     def fit(cls, data: ScenarioTensorData) -> "FeatureNormalizer":
@@ -154,6 +185,14 @@ class FeatureNormalizer:
         condition_mean = np.where(np.isfinite(condition_mean), condition_mean, 0.0)
         condition_std = np.where(np.isfinite(condition_std) & (condition_std > 0), condition_std, 1.0)
 
+        tabular_mean = None
+        tabular_std = None
+        if data.tabular_features is not None:
+            tabular_mean = np.nanmean(data.tabular_features, axis=0).astype(np.float32)
+            tabular_std = np.nanstd(data.tabular_features, axis=0).astype(np.float32)
+            tabular_mean = np.where(np.isfinite(tabular_mean), tabular_mean, 0.0)
+            tabular_std = np.where(np.isfinite(tabular_std) & (tabular_std > 0), tabular_std, 1.0)
+
         return cls(
             mass_mean=mass_mean,
             mass_std=mass_std,
@@ -161,6 +200,8 @@ class FeatureNormalizer:
             property_std=property_std,
             condition_mean=condition_mean,
             condition_std=condition_std,
+            tabular_mean=tabular_mean,
+            tabular_std=tabular_std,
         )
 
     def transform(self, data: ScenarioTensorData) -> ScenarioTensorData:
@@ -177,6 +218,12 @@ class FeatureNormalizer:
         conditions = (conditions - self.condition_mean.reshape(1, -1)) / self.condition_std.reshape(1, -1)
         conditions = np.nan_to_num(conditions, nan=0.0, posinf=0.0, neginf=0.0)
 
+        tabular_features = None
+        if data.tabular_features is not None and self.tabular_mean is not None and self.tabular_std is not None:
+            tabular_features = data.tabular_features.astype(np.float32).copy()
+            tabular_features = (tabular_features - self.tabular_mean.reshape(1, -1)) / self.tabular_std.reshape(1, -1)
+            tabular_features = np.nan_to_num(tabular_features, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
+
         return ScenarioTensorData(
             scenario_ids=data.scenario_ids.copy(),
             family_ids=data.family_ids.copy(),
@@ -188,6 +235,7 @@ class FeatureNormalizer:
             component_mask=data.component_mask.astype(np.float32).copy(),
             conditions=conditions.astype(np.float32),
             catalyst_ids=data.catalyst_ids.copy(),
+            tabular_features=tabular_features,
             targets=None if data.targets is None else data.targets.astype(np.float32).copy(),
         )
 
@@ -224,7 +272,11 @@ def set_torch_seed(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
 
 
-def build_deep_sets_schema(train_frame: pd.DataFrame, test_frame: pd.DataFrame) -> DeepSetsSchema:
+def build_deep_sets_schema(
+    train_frame: pd.DataFrame,
+    test_frame: pd.DataFrame,
+    tabular_feature_columns: Sequence[str] | None = None,
+) -> DeepSetsSchema:
     """Infer stable vocabularies and padding limits from prepared row-level data."""
 
     combined = pd.concat([train_frame, test_frame], ignore_index=True, sort=False)
@@ -269,7 +321,25 @@ def build_deep_sets_schema(train_frame: pd.DataFrame, test_frame: pd.DataFrame) 
         component_to_index=component_to_index,
         catalyst_to_index=catalyst_to_index,
         max_components=max_components,
+        tabular_feature_columns=list(tabular_feature_columns or []),
     )
+
+
+def align_tabular_features(
+    scenario_ids: np.ndarray,
+    feature_frame: pd.DataFrame,
+    feature_columns: Sequence[str],
+) -> np.ndarray:
+    """Align scenario-level tabular features to the padded tensor scenario order."""
+
+    aligned = (
+        feature_frame.loc[:, ["scenario_id", *feature_columns]]
+        .drop_duplicates(subset=["scenario_id"])
+        .set_index("scenario_id")
+        .reindex(scenario_ids)
+    )
+    numeric = aligned.apply(pd.to_numeric, errors="coerce").fillna(0.0)
+    return numeric.to_numpy(dtype=np.float32)
 
 
 def build_scenario_tensor_data(
@@ -383,6 +453,7 @@ def build_scenario_tensor_data(
         component_mask=component_mask,
         conditions=np.nan_to_num(conditions, nan=0.0, posinf=0.0, neginf=0.0),
         catalyst_ids=catalyst_ids,
+        tabular_features=None,
         targets=targets,
     )
 
@@ -408,6 +479,8 @@ class ScenarioDataset(Dataset):
             "conditions": torch.as_tensor(self.data.conditions[index], dtype=torch.float32),
             "catalyst_ids": torch.as_tensor(self.data.catalyst_ids[index], dtype=torch.long),
         }
+        if self.data.tabular_features is not None:
+            item["tabular_features"] = torch.as_tensor(self.data.tabular_features[index], dtype=torch.float32)
         if self.data.targets is not None:
             item["targets"] = torch.as_tensor(self.data.targets[index], dtype=torch.float32)
         return item
@@ -418,7 +491,7 @@ def build_dataloader(
     batch_size: int,
     shuffle: bool,
 ) -> DataLoader:
-    """Create a simple dataloader for scenario tensors."""
+    """Create a dataloader for scenario tensors."""
 
     return DataLoader(
         ScenarioDataset(data),
@@ -452,7 +525,7 @@ class MLPBlock(nn.Module):
 
 
 class DeepSetsRegressor(nn.Module):
-    """Compact Deep Sets regressor for scenario-level multi-output prediction."""
+    """Compact Deep Sets regressor with optional tabular and component-id branches."""
 
     def __init__(
         self,
@@ -462,12 +535,23 @@ class DeepSetsRegressor(nn.Module):
         component_embedding_dim: int = 8,
         element_hidden_dim: int = 64,
         condition_hidden_dim: int = 32,
+        tabular_hidden_dim: int = 48,
         fusion_hidden_dim: int = 64,
         dropout: float = 0.1,
+        use_component_embedding: bool = True,
+        use_tabular_branch: bool = True,
     ) -> None:
         super().__init__()
+        self.use_component_embedding = use_component_embedding
+        self.use_tabular_branch = use_tabular_branch and schema.tabular_input_dim > 0
+
         self.family_embedding = nn.Embedding(schema.family_vocab_size, family_embedding_dim, padding_idx=0)
-        self.component_embedding = nn.Embedding(schema.component_vocab_size, component_embedding_dim, padding_idx=0)
+        if self.use_component_embedding:
+            self.component_embedding = nn.Embedding(schema.component_vocab_size, component_embedding_dim, padding_idx=0)
+        else:
+            self.component_embedding = None
+            component_embedding_dim = 0
+
         self.catalyst_embedding = nn.Embedding(schema.catalyst_vocab_size, 4, padding_idx=0)
 
         property_input_dim = len(schema.property_columns) * 2 + len(COMPONENT_FLAG_COLUMNS)
@@ -492,8 +576,21 @@ class DeepSetsRegressor(nn.Module):
             output_dim=condition_hidden_dim,
             dropout=dropout,
         )
+
+        if self.use_tabular_branch:
+            self.tabular_encoder = MLPBlock(
+                input_dim=schema.tabular_input_dim,
+                hidden_dims=[tabular_hidden_dim],
+                output_dim=tabular_hidden_dim,
+                dropout=dropout,
+            )
+            tabular_output_dim = tabular_hidden_dim
+        else:
+            self.tabular_encoder = None
+            tabular_output_dim = 0
+
         self.fusion_head = MLPBlock(
-            input_dim=2 * element_hidden_dim + condition_hidden_dim,
+            input_dim=2 * element_hidden_dim + condition_hidden_dim + tabular_output_dim,
             hidden_dims=[fusion_hidden_dim],
             output_dim=len(TRAIN_TARGET_COLUMNS),
             dropout=dropout,
@@ -512,7 +609,10 @@ class DeepSetsRegressor(nn.Module):
 
     def forward(self, batch: dict[str, torch.Tensor]) -> torch.Tensor:
         family_embedding = self.family_embedding(batch["family_ids"])
-        component_embedding = self.component_embedding(batch["component_ids"])
+        element_pieces = [family_embedding]
+
+        if self.use_component_embedding and self.component_embedding is not None:
+            element_pieces.append(self.component_embedding(batch["component_ids"]))
 
         property_input = torch.cat(
             [
@@ -524,16 +624,14 @@ class DeepSetsRegressor(nn.Module):
         )
         property_latent = self.property_encoder(property_input)
 
-        element_inputs = torch.cat(
+        element_pieces.extend(
             [
-                family_embedding,
-                component_embedding,
                 batch["mass_fraction"],
                 property_latent,
                 batch["component_flags"],
-            ],
-            dim=-1,
+            ]
         )
+        element_inputs = torch.cat(element_pieces, dim=-1)
         element_latent = self.element_encoder(element_inputs)
 
         component_mask = batch["component_mask"].unsqueeze(-1)
@@ -547,5 +645,9 @@ class DeepSetsRegressor(nn.Module):
 
         catalyst_embedding = self.catalyst_embedding(batch["catalyst_ids"])
         condition_latent = self.condition_encoder(torch.cat([batch["conditions"], catalyst_embedding], dim=-1))
-        fused = torch.cat([pooled_mean, pooled_max, condition_latent], dim=-1)
+
+        fusion_inputs = [pooled_mean, pooled_max, condition_latent]
+        if self.use_tabular_branch and self.tabular_encoder is not None and "tabular_features" in batch:
+            fusion_inputs.append(self.tabular_encoder(batch["tabular_features"]))
+        fused = torch.cat(fusion_inputs, dim=-1)
         return self.fusion_head(fused)

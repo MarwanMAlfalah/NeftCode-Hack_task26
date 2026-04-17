@@ -1,4 +1,4 @@
-"""Grouped-CV training utilities for the compact Deep Sets v1 model."""
+"""Grouped-CV training utilities for Hybrid Deep Sets v2."""
 
 from __future__ import annotations
 
@@ -14,10 +14,12 @@ import torch
 from sklearn.model_selection import GroupKFold
 
 from src.config import (
+    FEATURE_MANIFEST_OUTPUT_PATH,
     RANDOM_SEED,
     TEST_JOINED_OUTPUT_PATH,
+    TEST_SCENARIO_FEATURES_OUTPUT_PATH,
     TRAIN_JOINED_OUTPUT_PATH,
-    TRAIN_TARGET_COLUMNS,
+    TRAIN_SCENARIO_FEATURES_OUTPUT_PATH,
 )
 from src.eval.metrics import compute_target_scales, evaluate_regression_predictions
 from src.models.deep_sets import (
@@ -26,6 +28,7 @@ from src.models.deep_sets import (
     FeatureNormalizer,
     ScenarioTensorData,
     TargetScaler,
+    align_tabular_features,
     build_dataloader,
     build_deep_sets_schema,
     build_scenario_tensor_data,
@@ -40,9 +43,12 @@ from src.models.train_baselines import (
 )
 
 
+TABULAR_FEATURE_GROUPS = ["scenario_conditions", "structure_and_mass", "component_families"]
+
+
 @dataclass(frozen=True)
 class DeepSetsConfig:
-    """Compact, data-efficient Deep Sets training configuration."""
+    """Compact, data-efficient hybrid Deep Sets training configuration."""
 
     batch_size: int = 32
     max_epochs: int = 250
@@ -55,9 +61,18 @@ class DeepSetsConfig:
     family_embedding_dim: int = 8
     component_embedding_dim: int = 8
     element_hidden_dim: int = 64
-    condition_hidden_dim: int = 32
+    condition_hidden_dim: int = 24
+    tabular_hidden_dim: int = 32
     fusion_hidden_dim: int = 64
     dropout: float = 0.10
+
+
+@dataclass(frozen=True)
+class HybridVariant:
+    """One Deep Sets architecture variant to evaluate."""
+
+    name: str
+    use_component_embedding: bool
 
 
 @dataclass(frozen=True)
@@ -67,6 +82,7 @@ class PreparedDeepSetsData:
     train_data: ScenarioTensorData
     test_data: ScenarioTensorData
     schema: DeepSetsSchema
+    tabular_feature_columns: list[str]
 
 
 @dataclass(frozen=True)
@@ -81,22 +97,80 @@ class FitArtifacts:
     train_history: list[dict[str, float]]
 
 
+def build_hybrid_variants() -> list[HybridVariant]:
+    """Return the required v2 model variants."""
+
+    return [
+        HybridVariant(name="hybrid_deep_sets_v2_family_only", use_component_embedding=False),
+        HybridVariant(name="hybrid_deep_sets_v2_family_component", use_component_embedding=True),
+    ]
+
+
+def load_tabular_feature_columns(
+    feature_manifest_path: Path = FEATURE_MANIFEST_OUTPUT_PATH,
+) -> list[str]:
+    """Load the strongest tabular feature subset from the saved feature manifest."""
+
+    feature_manifest = json.loads(feature_manifest_path.read_text(encoding="utf-8"))
+    feature_groups = feature_manifest["feature_group_columns"]
+    columns: list[str] = []
+    for group_name in TABULAR_FEATURE_GROUPS:
+        columns.extend(feature_groups[group_name])
+    return list(dict.fromkeys(columns))
+
+
 def load_deep_sets_data(
     train_path: Path = TRAIN_JOINED_OUTPUT_PATH,
     test_path: Path = TEST_JOINED_OUTPUT_PATH,
+    train_feature_path: Path = TRAIN_SCENARIO_FEATURES_OUTPUT_PATH,
+    test_feature_path: Path = TEST_SCENARIO_FEATURES_OUTPUT_PATH,
+    feature_manifest_path: Path = FEATURE_MANIFEST_OUTPUT_PATH,
 ) -> PreparedDeepSetsData:
-    """Load prepared component rows and convert them into padded scenario tensors."""
+    """Load prepared component rows and aligned scenario-level hybrid features."""
 
     train_frame = pd.read_csv(train_path)
     test_frame = pd.read_csv(test_path)
-    schema = build_deep_sets_schema(train_frame=train_frame, test_frame=test_frame)
+    tabular_feature_columns = load_tabular_feature_columns(feature_manifest_path=feature_manifest_path)
+    schema = build_deep_sets_schema(
+        train_frame=train_frame,
+        test_frame=test_frame,
+        tabular_feature_columns=tabular_feature_columns,
+    )
+
     train_data = build_scenario_tensor_data(train_frame, schema=schema, include_targets=True)
     test_data = build_scenario_tensor_data(test_frame, schema=schema, include_targets=False)
-    return PreparedDeepSetsData(train_data=train_data, test_data=test_data, schema=schema)
+
+    train_features = pd.read_csv(train_feature_path)
+    test_features = pd.read_csv(test_feature_path)
+    train_data = train_data.with_tabular_features(
+        align_tabular_features(
+            scenario_ids=train_data.scenario_ids,
+            feature_frame=train_features,
+            feature_columns=tabular_feature_columns,
+        )
+    )
+    test_data = test_data.with_tabular_features(
+        align_tabular_features(
+            scenario_ids=test_data.scenario_ids,
+            feature_frame=test_features,
+            feature_columns=tabular_feature_columns,
+        )
+    )
+
+    return PreparedDeepSetsData(
+        train_data=train_data,
+        test_data=test_data,
+        schema=schema,
+        tabular_feature_columns=tabular_feature_columns,
+    )
 
 
-def build_model(schema: DeepSetsSchema, config: DeepSetsConfig) -> DeepSetsRegressor:
-    """Instantiate the compact Deep Sets regressor from config."""
+def build_model(
+    schema: DeepSetsSchema,
+    config: DeepSetsConfig,
+    variant: HybridVariant,
+) -> DeepSetsRegressor:
+    """Instantiate one hybrid Deep Sets variant."""
 
     return DeepSetsRegressor(
         schema=schema,
@@ -105,8 +179,11 @@ def build_model(schema: DeepSetsSchema, config: DeepSetsConfig) -> DeepSetsRegre
         component_embedding_dim=config.component_embedding_dim,
         element_hidden_dim=config.element_hidden_dim,
         condition_hidden_dim=config.condition_hidden_dim,
+        tabular_hidden_dim=config.tabular_hidden_dim,
         fusion_hidden_dim=config.fusion_hidden_dim,
         dropout=config.dropout,
+        use_component_embedding=variant.use_component_embedding,
+        use_tabular_branch=True,
     )
 
 
@@ -151,10 +228,11 @@ def fit_deep_sets_model(
     groups: np.ndarray,
     schema: DeepSetsSchema,
     config: DeepSetsConfig,
+    variant: HybridVariant,
     seed: int,
     device: torch.device | None = None,
 ) -> FitArtifacts:
-    """Train Deep Sets with an internal grouped early-stopping split."""
+    """Train one hybrid Deep Sets variant with grouped early stopping."""
 
     set_torch_seed(seed)
     device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -179,7 +257,7 @@ def fit_deep_sets_model(
         batch_size=config.batch_size,
         shuffle=True,
     )
-    model = build_model(schema=schema, config=config).to(device)
+    model = build_model(schema=schema, config=config, variant=variant).to(device)
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=config.learning_rate,
@@ -240,17 +318,18 @@ def predict_deep_sets(
     raw_data: ScenarioTensorData,
     schema: DeepSetsSchema,
     config: DeepSetsConfig,
+    variant: HybridVariant,
     fit_artifacts: FitArtifacts,
     batch_size: int,
     device: torch.device | None = None,
 ) -> np.ndarray:
-    """Run Deep Sets inference and return predictions on the raw target scale."""
+    """Run hybrid Deep Sets inference and return predictions on the transformed target scale."""
 
     device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
     normalized = fit_artifacts.feature_normalizer.transform(raw_data).with_targets(None)
     dataloader = build_dataloader(data=normalized, batch_size=batch_size, shuffle=False)
 
-    model = build_model(schema=schema, config=config).to(device)
+    model = build_model(schema=schema, config=config, variant=variant).to(device)
     model.load_state_dict(fit_artifacts.model_state_dict)
     model.eval()
 
@@ -265,11 +344,16 @@ def predict_deep_sets(
     return fit_artifacts.target_scaler.inverse_transform(scaled_predictions)
 
 
-def _serialize_training_metadata(config: DeepSetsConfig, fit_artifacts: FitArtifacts) -> str:
+def _serialize_training_metadata(
+    config: DeepSetsConfig,
+    variant: HybridVariant,
+    fit_artifacts: FitArtifacts,
+) -> str:
     """Serialize stable model metadata for the fold output table."""
 
     payload = {
         "config": asdict(config),
+        "variant": asdict(variant),
         "best_epoch": fit_artifacts.best_epoch,
         "best_val_loss": fit_artifacts.best_val_loss,
     }
@@ -296,33 +380,57 @@ def _build_error_analysis_table(predictions: pd.DataFrame) -> pd.DataFrame:
 def _load_best_tabular_reference(
     path: Path = Path("outputs/cv/baseline_ablation_results.csv"),
 ) -> dict[str, object]:
-    """Load the current best tabular comparison row used in the Deep Sets report."""
+    """Load the best saved tabular comparison row."""
 
     if not path.exists():
         return {
             "feature_setting": "conditions_structure_family",
             "combined_score__mean": 1.7163,
-            "target_delta_kinematic_viscosity_pct__rmse__mean": np.nan,
-            "target_oxidation_eot_a_per_cm__rmse__mean": np.nan,
+            "target_delta_kinematic_viscosity_pct__rmse__mean": 135.8257,
+            "target_oxidation_eot_a_per_cm__rmse__mean": 34.2225,
         }
 
     frame = pd.read_csv(path)
-    best_row = frame.sort_values("combined_score__mean", ascending=True).iloc[0]
-    return best_row.to_dict()
+    return frame.sort_values("combined_score__mean", ascending=True).iloc[0].to_dict()
+
+
+def _load_deep_sets_v1_reference(
+    path: Path = Path("outputs/cv/deep_sets_cv_results.csv"),
+) -> dict[str, object]:
+    """Load the best saved Deep Sets v1 row."""
+
+    if not path.exists():
+        return {
+            "model_name": "deep_sets_v1",
+            "target_strategy": "raw",
+            "combined_score__mean": 1.6813,
+            "target_delta_kinematic_viscosity_pct__rmse__mean": 142.4379,
+            "target_oxidation_eot_a_per_cm__rmse__mean": 21.3296,
+        }
+
+    frame = pd.read_csv(path)
+    return frame.sort_values("combined_score__mean", ascending=True).iloc[0].to_dict()
 
 
 def build_deep_sets_report(
     summary_results: pd.DataFrame,
     fold_metrics: pd.DataFrame,
     best_predictions: pd.DataFrame,
-    schema: DeepSetsSchema,
+    prepared_data: PreparedDeepSetsData,
     best_tabular_reference: dict[str, object],
+    deep_sets_v1_reference: dict[str, object],
 ) -> str:
-    """Create a concise markdown report comparing Deep Sets against the tabular bar."""
+    """Create a concise markdown report comparing hybrid v2 against v1 and tabular."""
 
     best_row = summary_results.iloc[0]
     tabular_score = float(best_tabular_reference["combined_score__mean"])
+    v1_score = float(deep_sets_v1_reference["combined_score__mean"])
     delta_vs_tabular = float(best_row["combined_score__mean"]) - tabular_score
+    delta_vs_v1 = float(best_row["combined_score__mean"]) - v1_score
+    viscosity_delta_vs_v1 = (
+        float(best_row[f"{VISCOSITY_TARGET}__rmse__mean"])
+        - float(deep_sets_v1_reference[f"{VISCOSITY_TARGET}__rmse__mean"])
+    )
 
     comparison_columns = [
         "rank_combined_score",
@@ -335,25 +443,6 @@ def build_deep_sets_report(
         f"{OXIDATION_TARGET}__mae__mean",
     ]
 
-    transform_lines: list[str] = []
-    if set(summary_results["target_strategy"]) >= {"raw", "viscosity_asinh"}:
-        transform_comparison = summary_results.pivot(
-            index="model_name",
-            columns="target_strategy",
-            values=["combined_score__mean", f"{VISCOSITY_TARGET}__rmse__mean"],
-        )
-        for model_name in sorted(summary_results["model_name"].unique()):
-            raw_score = transform_comparison.get(("combined_score__mean", "raw"))
-            asinh_score = transform_comparison.get(("combined_score__mean", "viscosity_asinh"))
-            raw_rmse = transform_comparison.get((f"{VISCOSITY_TARGET}__rmse__mean", "raw"))
-            asinh_rmse = transform_comparison.get((f"{VISCOSITY_TARGET}__rmse__mean", "viscosity_asinh"))
-            if raw_score is None or asinh_score is None or raw_rmse is None or asinh_rmse is None:
-                continue
-            transform_lines.append(
-                f"- `{model_name}`: combined score delta `{asinh_score.loc[model_name] - raw_score.loc[model_name]:+.4f}`, "
-                f"viscosity RMSE delta `{asinh_rmse.loc[model_name] - raw_rmse.loc[model_name]:+.4f}`"
-            )
-
     hardest_cases = _build_error_analysis_table(best_predictions).head(5)
     hardest_case_lines = [
         (
@@ -364,29 +453,48 @@ def build_deep_sets_report(
         for row in hardest_cases.to_dict(orient="records")
     ]
 
-    fold_dispersion = fold_metrics.groupby(["model_name", "target_strategy"])[
-        ["combined_score", f"{VISCOSITY_TARGET}__rmse", f"{OXIDATION_TARGET}__rmse"]
-    ].std()
+    transform_lines: list[str] = []
+    if set(summary_results["target_strategy"]) >= {"raw", "viscosity_asinh"}:
+        pivot = summary_results.pivot(
+            index="model_name",
+            columns="target_strategy",
+            values=["combined_score__mean", f"{VISCOSITY_TARGET}__rmse__mean"],
+        )
+        for model_name in sorted(summary_results["model_name"].unique()):
+            raw_score = pivot.get(("combined_score__mean", "raw"))
+            asinh_score = pivot.get(("combined_score__mean", "viscosity_asinh"))
+            raw_rmse = pivot.get((f"{VISCOSITY_TARGET}__rmse__mean", "raw"))
+            asinh_rmse = pivot.get((f"{VISCOSITY_TARGET}__rmse__mean", "viscosity_asinh"))
+            if raw_score is None or asinh_score is None or raw_rmse is None or asinh_rmse is None:
+                continue
+            transform_lines.append(
+                f"- `{model_name}`: combined score delta `{asinh_score.loc[model_name] - raw_score.loc[model_name]:+.4f}`, "
+                f"viscosity RMSE delta `{asinh_rmse.loc[model_name] - raw_rmse.loc[model_name]:+.4f}`"
+            )
 
     lines = [
-        "# Deep Sets CV Report",
+        "# Hybrid Deep Sets v2 Report",
         "",
-        "## Data Snapshot",
-        f"- Train scenarios: `{len(best_predictions['scenario_id'].unique())}`",
-        f"- Max components per scenario: `{schema.max_components}`",
-        f"- Property columns per component: `{len(schema.property_columns)}`",
+        "## Hybrid Architecture",
+        "- Set branch: per-component Deep Sets encoder over family / optional component embeddings, mass fraction, property compression, masks, and coverage flags.",
+        "- Condition branch: explicit temperature, duration, biofuel, and catalyst embedding.",
         (
-            f"- Learned vocab sizes: families `{schema.family_vocab_size}`, "
-            f"components `{schema.component_vocab_size}`, catalysts `{schema.catalyst_vocab_size}`"
+            f"- Tabular branch: `{len(prepared_data.tabular_feature_columns)}` scenario-level features from "
+            "`conditions_structure_family`."
         ),
+        "- Fusion: concatenate pooled set representation, condition representation, and tabular representation into a compact 2-target head.",
         "",
-        "## Deep Sets Comparison",
+        "## Tabular Features Used",
+        f"- Feature groups: `{TABULAR_FEATURE_GROUPS}`",
+        f"- Feature count: `{len(prepared_data.tabular_feature_columns)}`",
+        "",
+        "## Hybrid Comparison",
         "",
         "```text",
         summary_results.loc[:, comparison_columns].to_string(index=False),
         "```",
         "",
-        "## Best Deep Sets v1",
+        "## Best Hybrid Deep Sets v2",
         (
             f"- Best configuration: `{best_row['model_name']}` with target strategy `{best_row['target_strategy']}` "
             f"and mean combined score `{best_row['combined_score__mean']:.4f}`"
@@ -396,20 +504,34 @@ def build_deep_sets_report(
             f"oxidation `{best_row[f'{OXIDATION_TARGET}__rmse__mean']:.4f}`"
         ),
         "",
-        "## Comparison To Current Best Tabular Baseline",
+        "## Comparison Against References",
         (
-            f"- Tabular reference: `{best_tabular_reference['feature_setting']}` with mean combined score "
-            f"`{tabular_score:.4f}`"
+            f"- Best tabular baseline: `{best_tabular_reference['feature_setting']}` with combined score "
+            f"`{tabular_score:.4f}` and viscosity RMSE "
+            f"`{float(best_tabular_reference[f'{VISCOSITY_TARGET}__rmse__mean']):.4f}`"
         ),
         (
-            f"- Deep Sets delta vs tabular: `{delta_vs_tabular:+.4f}` "
+            f"- Deep Sets v1 reference: `{deep_sets_v1_reference['model_name']}` / "
+            f"`{deep_sets_v1_reference['target_strategy']}` with combined score `{v1_score:.4f}`"
+        ),
+        (
+            f"- Hybrid delta vs tabular: `{delta_vs_tabular:+.4f}` "
             f"({'better' if delta_vs_tabular < 0 else 'worse'})"
         ),
+        (
+            f"- Hybrid delta vs Deep Sets v1: `{delta_vs_v1:+.4f}` "
+            f"({'better' if delta_vs_v1 < 0 else 'worse'})"
+        ),
+        (
+            f"- Hybrid viscosity RMSE delta vs Deep Sets v1: `{viscosity_delta_vs_v1:+.4f}` "
+            f"({'improved' if viscosity_delta_vs_v1 < 0 else 'worsened'})"
+        ),
         "",
-        "## Input Design",
-        "- One set element per component row with family embedding, component embedding, standardized mass fraction, compressed property vector, property mask, and coverage/source flags.",
-        "- Scenario condition branch uses temperature, time, biofuel mass fraction, and catalyst category embedding.",
-        "- Pooling is permutation-invariant mean plus max before fusion into a 2-target regression head.",
+        "## Ablations Run",
+        "- family embedding only + raw",
+        "- family embedding only + viscosity_asinh",
+        "- family + component embedding + raw",
+        "- family + component embedding + viscosity_asinh",
         "",
         "## Viscosity Transform Effect",
     ]
@@ -426,22 +548,11 @@ def build_deep_sets_report(
             *hardest_case_lines,
             "",
             "## Risks",
-            "- The dataset is small for a neural model, so fold variance remains meaningful even with the compact architecture.",
-            "- Component identity embeddings can overfit rare components; the family path is likely the more stable generalization route.",
-            "- Missing numeric properties are handled by masks and flags, but the model still sees zero-filled values behind those masks.",
+            "- The hybrid still trains on only 167 scenarios, so fold variance remains material.",
+            "- The tabular branch may memorize structure patterns that do not generalize if scenario coverage shifts.",
+            "- Component identity embeddings still risk overfitting rare additives and batches.",
         ]
     )
-
-    if not fold_dispersion.empty:
-        volatile = fold_dispersion.sort_values("combined_score", ascending=False).head(3)
-        lines.extend(["", "## Fold Volatility"])
-        for (model_name, target_strategy), row in volatile.iterrows():
-            lines.append(
-                f"- `{model_name}` / `{target_strategy}`: combined score std `{row['combined_score']:.4f}`, "
-                f"viscosity RMSE std `{row[f'{VISCOSITY_TARGET}__rmse']:.4f}`, "
-                f"oxidation RMSE std `{row[f'{OXIDATION_TARGET}__rmse']:.4f}`"
-            )
-
     return "\n".join(lines) + "\n"
 
 
@@ -452,10 +563,11 @@ def run_deep_sets_cv(
     seed: int = RANDOM_SEED,
     device: torch.device | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, str]:
-    """Run grouped CV for Deep Sets across the supported target strategies."""
+    """Run grouped CV for hybrid Deep Sets v2 across variants and target strategies."""
 
     config = config or DeepSetsConfig()
     target_strategies = build_target_strategies()
+    variants = build_hybrid_variants()
     train_data = prepared_data.train_data
     groups = np.asarray(train_data.scenario_ids, dtype=object)
     outer_cv = GroupKFold(n_splits=outer_splits, shuffle=True, random_state=seed)
@@ -481,64 +593,71 @@ def run_deep_sets_cv(
                 target_strategy.transform(y_valid_raw).astype(np.float32)
             )
 
-            start_time = time.perf_counter()
-            fit_artifacts = fit_deep_sets_model(
-                train_data=transformed_train_fold,
-                groups=groups[train_index],
-                schema=prepared_data.schema,
-                config=config,
-                seed=seed + fold_index,
-                device=device,
-            )
-            fit_time = time.perf_counter() - start_time
-
-            valid_predictions_transformed = predict_deep_sets(
-                raw_data=transformed_valid_fold,
-                schema=prepared_data.schema,
-                config=config,
-                fit_artifacts=fit_artifacts,
-                batch_size=config.batch_size,
-                device=device,
-            )
-            valid_predictions_raw = target_strategy.inverse_transform(valid_predictions_transformed)
-            metrics = evaluate_regression_predictions(
-                y_true=y_valid_raw,
-                y_pred=valid_predictions_raw,
-                target_names=TARGET_COLUMNS,
-                target_scales=target_scales,
-            )
-
-            fold_record = {
-                "fold_index": fold_index,
-                "model_name": "deep_sets_v1",
-                "target_strategy": target_strategy.name,
-                "n_train": len(train_index),
-                "n_valid": len(valid_index),
-                "fit_time_seconds": fit_time,
-                "best_inner_cv_score": fit_artifacts.best_val_loss,
-                "best_params_json": _serialize_training_metadata(config=config, fit_artifacts=fit_artifacts),
-                "best_epoch": fit_artifacts.best_epoch,
-                "viscosity_scale": target_scales[VISCOSITY_TARGET],
-                "oxidation_scale": target_scales[OXIDATION_TARGET],
-            }
-            fold_record.update(metrics)
-            fold_records.append(fold_record)
-
-            for row_offset, scenario_id in enumerate(raw_valid_fold.scenario_ids):
-                prediction_records.append(
-                    {
-                        "fold_index": fold_index,
-                        "model_name": "deep_sets_v1",
-                        "target_strategy": target_strategy.name,
-                        "scenario_id": scenario_id,
-                        f"{VISCOSITY_TARGET}__true": y_valid_raw[row_offset, 0],
-                        f"{VISCOSITY_TARGET}__pred": valid_predictions_raw[row_offset, 0],
-                        f"{OXIDATION_TARGET}__true": y_valid_raw[row_offset, 1],
-                        f"{OXIDATION_TARGET}__pred": valid_predictions_raw[row_offset, 1],
-                        "viscosity_scale": target_scales[VISCOSITY_TARGET],
-                        "oxidation_scale": target_scales[OXIDATION_TARGET],
-                    }
+            for variant in variants:
+                start_time = time.perf_counter()
+                fit_artifacts = fit_deep_sets_model(
+                    train_data=transformed_train_fold,
+                    groups=groups[train_index],
+                    schema=prepared_data.schema,
+                    config=config,
+                    variant=variant,
+                    seed=seed + fold_index,
+                    device=device,
                 )
+                fit_time = time.perf_counter() - start_time
+
+                valid_predictions_transformed = predict_deep_sets(
+                    raw_data=transformed_valid_fold,
+                    schema=prepared_data.schema,
+                    config=config,
+                    variant=variant,
+                    fit_artifacts=fit_artifacts,
+                    batch_size=config.batch_size,
+                    device=device,
+                )
+                valid_predictions_raw = target_strategy.inverse_transform(valid_predictions_transformed)
+                metrics = evaluate_regression_predictions(
+                    y_true=y_valid_raw,
+                    y_pred=valid_predictions_raw,
+                    target_names=TARGET_COLUMNS,
+                    target_scales=target_scales,
+                )
+
+                fold_record = {
+                    "fold_index": fold_index,
+                    "model_name": variant.name,
+                    "target_strategy": target_strategy.name,
+                    "n_train": len(train_index),
+                    "n_valid": len(valid_index),
+                    "fit_time_seconds": fit_time,
+                    "best_inner_cv_score": fit_artifacts.best_val_loss,
+                    "best_params_json": _serialize_training_metadata(
+                        config=config,
+                        variant=variant,
+                        fit_artifacts=fit_artifacts,
+                    ),
+                    "best_epoch": fit_artifacts.best_epoch,
+                    "viscosity_scale": target_scales[VISCOSITY_TARGET],
+                    "oxidation_scale": target_scales[OXIDATION_TARGET],
+                }
+                fold_record.update(metrics)
+                fold_records.append(fold_record)
+
+                for row_offset, scenario_id in enumerate(raw_valid_fold.scenario_ids):
+                    prediction_records.append(
+                        {
+                            "fold_index": fold_index,
+                            "model_name": variant.name,
+                            "target_strategy": target_strategy.name,
+                            "scenario_id": scenario_id,
+                            f"{VISCOSITY_TARGET}__true": y_valid_raw[row_offset, 0],
+                            f"{VISCOSITY_TARGET}__pred": valid_predictions_raw[row_offset, 0],
+                            f"{OXIDATION_TARGET}__true": y_valid_raw[row_offset, 1],
+                            f"{OXIDATION_TARGET}__pred": valid_predictions_raw[row_offset, 1],
+                            "viscosity_scale": target_scales[VISCOSITY_TARGET],
+                            "oxidation_scale": target_scales[OXIDATION_TARGET],
+                        }
+                    )
 
     fold_metrics = pd.DataFrame.from_records(fold_records)
     summary_results = aggregate_cv_results(fold_metrics)
@@ -552,7 +671,8 @@ def run_deep_sets_cv(
         summary_results=summary_results,
         fold_metrics=fold_metrics,
         best_predictions=best_predictions,
-        schema=prepared_data.schema,
+        prepared_data=prepared_data,
         best_tabular_reference=_load_best_tabular_reference(),
+        deep_sets_v1_reference=_load_deep_sets_v1_reference(),
     )
     return summary_results, fold_metrics, report
