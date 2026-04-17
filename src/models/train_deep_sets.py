@@ -24,6 +24,7 @@ from src.config import (
 )
 from src.eval.metrics import (
     compute_target_scales,
+    evaluate_platform_predictions,
     evaluate_platform_proxy_predictions,
     evaluate_regression_predictions,
 )
@@ -132,6 +133,7 @@ class FitArtifacts:
     best_epoch: int
     best_val_loss: float
     best_val_combined_score: float
+    best_val_platform_score: float
     best_val_platform_proxy_score: float
     train_history: list[dict[str, float]]
 
@@ -401,6 +403,7 @@ def fit_deep_sets_model(
     best_epoch = 0
     best_val_loss = float("inf")
     best_val_combined_score = float("inf")
+    best_val_platform_score = float("inf")
     best_val_platform_proxy_score = float("inf")
     epochs_without_improvement = 0
     history: list[dict[str, float]] = []
@@ -435,15 +438,23 @@ def fit_deep_sets_model(
             target_names=TARGET_COLUMNS,
             target_scales=target_scales,
         )
-        platform_metrics = evaluate_platform_proxy_predictions(
+        platform_metrics = evaluate_platform_predictions(
+            y_true=raw_inner_valid_targets,
+            y_pred=val_predictions_raw,
+            target_names=TARGET_COLUMNS,
+        )
+        platform_proxy_metrics = evaluate_platform_proxy_predictions(
             y_true=raw_inner_valid_targets,
             y_pred=val_predictions_raw,
             target_names=TARGET_COLUMNS,
             target_scales=target_scales,
         )
         val_combined_score = float(val_metrics["combined_score"])
-        val_platform_proxy_score = float(platform_metrics["platform_proxy_score"])
-        if config.checkpoint_metric == "platform_proxy_score":
+        val_platform_score = float(platform_metrics["platform_score"])
+        val_platform_proxy_score = float(platform_proxy_metrics["platform_proxy_score"])
+        if config.checkpoint_metric == "platform_score":
+            selection_score = val_platform_score
+        elif config.checkpoint_metric == "platform_proxy_score":
             selection_score = val_platform_proxy_score
         else:
             selection_score = val_combined_score
@@ -453,15 +464,22 @@ def fit_deep_sets_model(
                 "train_loss": train_loss,
                 "val_loss": val_loss,
                 "val_combined_score": val_combined_score,
+                "val_platform_score": val_platform_score,
                 "val_platform_proxy_score": val_platform_proxy_score,
             }
         )
 
-        if selection_score + config.min_delta < (
-            best_val_platform_proxy_score if config.checkpoint_metric == "platform_proxy_score" else best_val_combined_score
-        ):
+        if config.checkpoint_metric == "platform_score":
+            best_selection_score = best_val_platform_score
+        elif config.checkpoint_metric == "platform_proxy_score":
+            best_selection_score = best_val_platform_proxy_score
+        else:
+            best_selection_score = best_val_combined_score
+
+        if selection_score + config.min_delta < best_selection_score:
             best_val_loss = val_loss
             best_val_combined_score = val_combined_score
+            best_val_platform_score = val_platform_score
             best_val_platform_proxy_score = val_platform_proxy_score
             best_epoch = epoch
             best_state_dict = deepcopy(model.state_dict())
@@ -479,6 +497,7 @@ def fit_deep_sets_model(
         best_epoch=best_epoch,
         best_val_loss=best_val_loss,
         best_val_combined_score=best_val_combined_score,
+        best_val_platform_score=best_val_platform_score,
         best_val_platform_proxy_score=best_val_platform_proxy_score,
         train_history=history,
     )
@@ -671,6 +690,17 @@ def evaluate_single_deep_sets_configuration(
             target_names=TARGET_COLUMNS,
             target_scales=target_scales,
         )
+        platform_metrics = evaluate_platform_predictions(
+            y_true=y_valid_raw,
+            y_pred=valid_predictions_raw,
+            target_names=TARGET_COLUMNS,
+        )
+        platform_proxy_metrics = evaluate_platform_proxy_predictions(
+            y_true=y_valid_raw,
+            y_pred=valid_predictions_raw,
+            target_names=TARGET_COLUMNS,
+            target_scales=target_scales,
+        )
 
         fold_record = {
             "fold_index": fold_index,
@@ -691,6 +721,8 @@ def evaluate_single_deep_sets_configuration(
             **metadata,
         }
         fold_record.update(metrics)
+        fold_record.update(platform_metrics)
+        fold_record.update(platform_proxy_metrics)
         fold_records.append(fold_record)
 
         for row_offset, scenario_id in enumerate(raw_valid_fold.scenario_ids):
@@ -751,6 +783,7 @@ def _serialize_training_metadata(
         "best_epoch": fit_artifacts.best_epoch,
         "best_val_loss": fit_artifacts.best_val_loss,
         "best_val_combined_score": fit_artifacts.best_val_combined_score,
+        "best_val_platform_score": fit_artifacts.best_val_platform_score,
         "best_val_platform_proxy_score": fit_artifacts.best_val_platform_proxy_score,
     }
     return json.dumps(payload, sort_keys=True)
@@ -1022,6 +1055,17 @@ def run_deep_sets_cv(
                     target_names=TARGET_COLUMNS,
                     target_scales=target_scales,
                 )
+                platform_metrics = evaluate_platform_predictions(
+                    y_true=y_valid_raw,
+                    y_pred=valid_predictions_raw,
+                    target_names=TARGET_COLUMNS,
+                )
+                platform_proxy_metrics = evaluate_platform_proxy_predictions(
+                    y_true=y_valid_raw,
+                    y_pred=valid_predictions_raw,
+                    target_names=TARGET_COLUMNS,
+                    target_scales=target_scales,
+                )
 
                 fold_record = {
                     "fold_index": fold_index,
@@ -1041,6 +1085,8 @@ def run_deep_sets_cv(
                     "oxidation_scale": target_scales[OXIDATION_TARGET],
                 }
                 fold_record.update(metrics)
+                fold_record.update(platform_metrics)
+                fold_record.update(platform_proxy_metrics)
                 fold_records.append(fold_record)
 
                 for row_offset, scenario_id in enumerate(raw_valid_fold.scenario_ids):

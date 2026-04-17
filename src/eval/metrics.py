@@ -8,6 +8,12 @@ import numpy as np
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
 
+PLATFORM_TARGET_SCALES = {
+    "target_delta_kinematic_viscosity_pct": 2439.25,
+    "target_oxidation_eot_a_per_cm": 160.62,
+}
+
+
 def _as_2d_array(values: np.ndarray | list[list[float]] | list[float]) -> np.ndarray:
     """Convert arbitrary array-like values into a 2D float array."""
 
@@ -76,6 +82,39 @@ def evaluate_regression_predictions(
     metrics["combined_r2_mean"] = float(
         np.mean([metrics[f"{target_name}__r2"] for target_name in target_names])
     )
+    return metrics
+
+
+def evaluate_platform_predictions(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    target_names: Iterable[str],
+) -> dict[str, float]:
+    """Compute the fixed-constant MAE platform score used by the competition."""
+
+    y_true_array = _as_2d_array(y_true)
+    y_pred_array = np.nan_to_num(
+        _as_2d_array(y_pred),
+        nan=0.0,
+        posinf=1e6,
+        neginf=-1e6,
+    )
+    y_pred_array = np.clip(y_pred_array, -1e6, 1e6)
+
+    metrics: dict[str, float] = {}
+    normalized_mae: list[float] = []
+    for index, target_name in enumerate(target_names):
+        if target_name not in PLATFORM_TARGET_SCALES:
+            raise KeyError(f"Missing fixed platform scale for target: {target_name}")
+        true_column = y_true_array[:, index]
+        pred_column = y_pred_array[:, index]
+        mae = float(mean_absolute_error(true_column, pred_column))
+        nmae = mae / PLATFORM_TARGET_SCALES[target_name]
+        metrics[f"{target_name}__platform_mae"] = mae
+        metrics[f"{target_name}__platform_nmae"] = nmae
+        normalized_mae.append(nmae)
+
+    metrics["platform_score"] = float(np.mean(normalized_mae))
     return metrics
 
 
