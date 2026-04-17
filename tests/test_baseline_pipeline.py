@@ -38,6 +38,11 @@ class BaselinePipelineTest(unittest.TestCase):
         np.testing.assert_allclose(transformed[:, 1], y[:, 1])
         np.testing.assert_allclose(asinh.inverse_transform(transformed), y)
 
+        log1p_signed = strategies["viscosity_log1p_signed"]
+        transformed = log1p_signed.transform(y)
+        np.testing.assert_allclose(transformed[:, 1], y[:, 1])
+        np.testing.assert_allclose(log1p_signed.inverse_transform(transformed), y)
+
     def test_run_baseline_cv_returns_results_for_each_strategy(self) -> None:
         scenario_ids = [f"s{i:02d}" for i in range(12)]
         x1 = np.linspace(-2.0, 2.0, num=12)
@@ -87,8 +92,8 @@ class BaselinePipelineTest(unittest.TestCase):
             seed=7,
         )
 
-        self.assertEqual(set(summary["target_strategy"]), {"raw", "viscosity_asinh"})
-        self.assertEqual(len(fold_metrics), 6)
+        self.assertEqual(set(summary["target_strategy"]), {"raw", "viscosity_asinh", "viscosity_log1p_signed"})
+        self.assertEqual(len(fold_metrics), 9)
         self.assertIn("combined_score", fold_metrics.columns)
         self.assertIn("target_delta_kinematic_viscosity_pct__rmse", fold_metrics.columns)
         self.assertIn("target_oxidation_eot_a_per_cm__rmse", fold_metrics.columns)

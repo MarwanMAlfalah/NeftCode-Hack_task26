@@ -490,14 +490,21 @@ def build_dataloader(
     data: ScenarioTensorData,
     batch_size: int,
     shuffle: bool,
+    seed: int | None = None,
 ) -> DataLoader:
     """Create a dataloader for scenario tensors."""
+
+    generator = None
+    if seed is not None:
+        generator = torch.Generator()
+        generator.manual_seed(seed)
 
     return DataLoader(
         ScenarioDataset(data),
         batch_size=min(batch_size, max(1, len(data))),
         shuffle=shuffle,
         drop_last=False,
+        generator=generator,
     )
 
 

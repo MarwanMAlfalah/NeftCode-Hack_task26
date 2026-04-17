@@ -106,5 +106,9 @@ DEEP_SETS_REPORT_OUTPUT_PATH = REPORTS_DIR / "deep_sets_report.md"
 DEEP_SETS_V2_CV_RESULTS_OUTPUT_PATH = CV_OUTPUTS_DIR / "deep_sets_v2_cv_results.csv"
 DEEP_SETS_V2_FOLD_METRICS_OUTPUT_PATH = CV_OUTPUTS_DIR / "deep_sets_v2_fold_metrics.csv"
 DEEP_SETS_V2_REPORT_OUTPUT_PATH = REPORTS_DIR / "deep_sets_v2_report.md"
+FINAL_MODEL_SELECTION_RESULTS_OUTPUT_PATH = CV_OUTPUTS_DIR / "final_model_selection_results.csv"
+FINAL_MODEL_SELECTION_REPORT_OUTPUT_PATH = REPORTS_DIR / "final_model_selection_report.md"
+STABILITY_SPRINT_RESULTS_OUTPUT_PATH = CV_OUTPUTS_DIR / "stability_sprint_results.csv"
+STABILITY_SPRINT_REPORT_OUTPUT_PATH = REPORTS_DIR / "stability_sprint_report.md"
 
 RANDOM_SEED = 42

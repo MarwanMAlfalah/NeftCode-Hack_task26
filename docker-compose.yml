@@ -1,0 +1,11 @@
+services:
+  inference:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: neftekod-dot:latest
+    working_dir: /app
+    volumes:
+      - ./outputs:/app/outputs
+    command: >
+      jupyter nbconvert --to notebook --execute --inplace inference.ipynb

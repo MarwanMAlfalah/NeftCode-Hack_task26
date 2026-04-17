@@ -7,6 +7,7 @@ from dataclasses import asdict, dataclass
 import json
 from pathlib import Path
 import time
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -22,6 +23,8 @@ from src.config import (
     TRAIN_SCENARIO_FEATURES_OUTPUT_PATH,
 )
 from src.eval.metrics import compute_target_scales, evaluate_regression_predictions
+from src.features.build_scenario_features import run_feature_pipeline
+from src.data.prepare_properties import run_preparation_pipeline
 from src.models.deep_sets import (
     DeepSetsRegressor,
     DeepSetsSchema,
@@ -44,6 +47,12 @@ from src.models.train_baselines import (
 
 
 TABULAR_FEATURE_GROUPS = ["scenario_conditions", "structure_and_mass", "component_families"]
+WINNING_VARIANT_NAME = "hybrid_deep_sets_v2_family_only"
+WINNING_TARGET_STRATEGY_NAME = "raw"
+PREDICTION_COLUMN_MAP = {
+    "target_delta_kinematic_viscosity_pct": "Delta Kin. Viscosity KV100 - relative | - Daimler Oxidation Test (DOT), %",
+    "target_oxidation_eot_a_per_cm": "Oxidation EOT | DIN 51453 Daimler Oxidation Test (DOT), A/cm",
+}
 
 
 @dataclass(frozen=True)
@@ -52,9 +61,9 @@ class DeepSetsConfig:
 
     batch_size: int = 32
     max_epochs: int = 250
-    learning_rate: float = 1e-3
-    weight_decay: float = 1e-4
-    patience: int = 35
+    learning_rate: float = 7.5e-4
+    weight_decay: float = 2e-4
+    patience: int = 40
     min_delta: float = 1e-4
     grad_clip_norm: float = 5.0
     property_projection_dim: int = 16
@@ -76,6 +85,25 @@ class HybridVariant:
 
 
 @dataclass(frozen=True)
+class LossConfig:
+    """Training loss configuration for the two-target head."""
+
+    name: str
+    use_robust_viscosity_loss: bool
+    viscosity_delta: float = 1.0
+
+
+@dataclass(frozen=True)
+class StabilitySprintExperiment:
+    """One compact stabilization experiment for the frozen family-only architecture."""
+
+    experiment_name: str
+    variant_name: str
+    target_strategy_name: str
+    loss_config: LossConfig
+
+
+@dataclass(frozen=True)
 class PreparedDeepSetsData:
     """Scenario-level padded tensors plus stable vocab schema."""
 
@@ -94,6 +122,7 @@ class FitArtifacts:
     target_scaler: TargetScaler
     best_epoch: int
     best_val_loss: float
+    best_val_combined_score: float
     train_history: list[dict[str, float]]
 
 
@@ -104,6 +133,55 @@ def build_hybrid_variants() -> list[HybridVariant]:
         HybridVariant(name="hybrid_deep_sets_v2_family_only", use_component_embedding=False),
         HybridVariant(name="hybrid_deep_sets_v2_family_component", use_component_embedding=True),
     ]
+
+
+def build_stability_sprint_experiments() -> list[StabilitySprintExperiment]:
+    """Return the compact family-only stabilization experiment set."""
+
+    return [
+        StabilitySprintExperiment(
+            experiment_name="hybrid_deep_sets_v2_family_only__raw__mse",
+            variant_name="hybrid_deep_sets_v2_family_only",
+            target_strategy_name="raw",
+            loss_config=LossConfig(name="mse", use_robust_viscosity_loss=False),
+        ),
+        StabilitySprintExperiment(
+            experiment_name="hybrid_deep_sets_v2_family_only__viscosity_log1p_signed__mse",
+            variant_name="hybrid_deep_sets_v2_family_only",
+            target_strategy_name="viscosity_log1p_signed",
+            loss_config=LossConfig(name="mse", use_robust_viscosity_loss=False),
+        ),
+        StabilitySprintExperiment(
+            experiment_name="hybrid_deep_sets_v2_family_only__raw__robust_viscosity",
+            variant_name="hybrid_deep_sets_v2_family_only",
+            target_strategy_name="raw",
+            loss_config=LossConfig(name="robust_viscosity", use_robust_viscosity_loss=True, viscosity_delta=1.0),
+        ),
+        StabilitySprintExperiment(
+            experiment_name="hybrid_deep_sets_v2_family_only__viscosity_log1p_signed__robust_viscosity",
+            variant_name="hybrid_deep_sets_v2_family_only",
+            target_strategy_name="viscosity_log1p_signed",
+            loss_config=LossConfig(name="robust_viscosity", use_robust_viscosity_loss=True, viscosity_delta=1.0),
+        ),
+    ]
+
+
+def get_hybrid_variant_by_name(variant_name: str) -> HybridVariant:
+    """Return a hybrid variant by stable name."""
+
+    for variant in build_hybrid_variants():
+        if variant.name == variant_name:
+            return variant
+    raise KeyError(f"Unknown hybrid variant: {variant_name}")
+
+
+def get_target_strategy_by_name(target_strategy_name: str):
+    """Return a saved target strategy by stable name."""
+
+    for strategy in build_target_strategies():
+        if strategy.name == target_strategy_name:
+            return strategy
+    raise KeyError(f"Unknown target strategy: {target_strategy_name}")
 
 
 def load_tabular_feature_columns(
@@ -208,19 +286,44 @@ def _move_batch_to_device(batch: dict[str, torch.Tensor], device: torch.device) 
     return {name: tensor.to(device) for name, tensor in batch.items()}
 
 
-def _evaluate_loss(model: DeepSetsRegressor, data: ScenarioTensorData, batch_size: int, device: torch.device) -> float:
-    """Compute the mean validation loss on scaled targets."""
+def _build_training_loss(loss_config: LossConfig):
+    """Build the requested mixed loss for viscosity and oxidation."""
+
+    oxidation_loss = torch.nn.MSELoss()
+    if loss_config.use_robust_viscosity_loss:
+        viscosity_loss = torch.nn.HuberLoss(delta=loss_config.viscosity_delta)
+    else:
+        viscosity_loss = torch.nn.MSELoss()
+
+    def _loss_fn(predictions: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        viscosity = viscosity_loss(predictions[:, 0], targets[:, 0])
+        oxidation = oxidation_loss(predictions[:, 1], targets[:, 1])
+        return viscosity + oxidation
+
+    return _loss_fn
+
+
+def _evaluate_model_outputs(
+    model: DeepSetsRegressor,
+    data: ScenarioTensorData,
+    batch_size: int,
+    device: torch.device,
+    loss_fn,
+) -> tuple[float, np.ndarray]:
+    """Compute validation loss and return scaled predictions."""
 
     dataloader = build_dataloader(data=data, batch_size=batch_size, shuffle=False)
     losses: list[float] = []
-    criterion = torch.nn.MSELoss()
+    predictions: list[np.ndarray] = []
     model.eval()
     with torch.no_grad():
         for batch in dataloader:
             batch = _move_batch_to_device(batch, device)
-            predictions = model(batch)
-            losses.append(float(criterion(predictions, batch["targets"]).detach().cpu().item()))
-    return float(np.mean(losses)) if losses else float("inf")
+            batch_predictions = model(batch)
+            losses.append(float(loss_fn(batch_predictions, batch["targets"]).detach().cpu().item()))
+            predictions.append(batch_predictions.detach().cpu().numpy())
+    stacked_predictions = np.vstack(predictions).astype(np.float32) if predictions else np.empty((0, 2), dtype=np.float32)
+    return (float(np.mean(losses)) if losses else float("inf"), stacked_predictions)
 
 
 def fit_deep_sets_model(
@@ -229,17 +332,23 @@ def fit_deep_sets_model(
     schema: DeepSetsSchema,
     config: DeepSetsConfig,
     variant: HybridVariant,
+    target_strategy: Any,
+    raw_targets: np.ndarray,
     seed: int,
+    loss_config: LossConfig | None = None,
     device: torch.device | None = None,
 ) -> FitArtifacts:
     """Train one hybrid Deep Sets variant with grouped early stopping."""
 
     set_torch_seed(seed)
+    loss_config = loss_config or LossConfig(name="mse", use_robust_viscosity_loss=False)
     device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
     inner_train_indices, inner_valid_indices = _select_validation_indices(groups=groups, seed=seed)
 
     raw_inner_train = train_data.subset(inner_train_indices)
     raw_inner_valid = train_data.subset(inner_valid_indices)
+    raw_inner_train_targets = np.asarray(raw_targets[inner_train_indices], dtype=np.float32)
+    raw_inner_valid_targets = np.asarray(raw_targets[inner_valid_indices], dtype=np.float32)
     feature_normalizer = FeatureNormalizer.fit(raw_inner_train)
     normalized_inner_train = feature_normalizer.transform(raw_inner_train)
     normalized_inner_valid = feature_normalizer.transform(raw_inner_valid)
@@ -256,6 +365,7 @@ def fit_deep_sets_model(
         data=normalized_inner_train,
         batch_size=config.batch_size,
         shuffle=True,
+        seed=seed,
     )
     model = build_model(schema=schema, config=config, variant=variant).to(device)
     optimizer = torch.optim.AdamW(
@@ -263,11 +373,13 @@ def fit_deep_sets_model(
         lr=config.learning_rate,
         weight_decay=config.weight_decay,
     )
-    criterion = torch.nn.MSELoss()
+    loss_fn = _build_training_loss(loss_config=loss_config)
+    target_scales = compute_target_scales(raw_inner_train_targets, TARGET_COLUMNS)
 
     best_state_dict = deepcopy(model.state_dict())
     best_epoch = 0
     best_val_loss = float("inf")
+    best_val_combined_score = float("inf")
     epochs_without_improvement = 0
     history: list[dict[str, float]] = []
 
@@ -278,23 +390,42 @@ def fit_deep_sets_model(
             batch = _move_batch_to_device(batch, device)
             optimizer.zero_grad(set_to_none=True)
             predictions = model(batch)
-            loss = criterion(predictions, batch["targets"])
+            loss = loss_fn(predictions, batch["targets"])
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), config.grad_clip_norm)
             optimizer.step()
             train_losses.append(float(loss.detach().cpu().item()))
 
         train_loss = float(np.mean(train_losses)) if train_losses else float("inf")
-        val_loss = _evaluate_loss(
+        val_loss, val_predictions_scaled = _evaluate_model_outputs(
             model=model,
             data=normalized_inner_valid,
             batch_size=config.batch_size,
             device=device,
+            loss_fn=loss_fn,
         )
-        history.append({"epoch": float(epoch), "train_loss": train_loss, "val_loss": val_loss})
+        val_predictions_raw = target_strategy.inverse_transform(
+            target_scaler.inverse_transform(val_predictions_scaled)
+        )
+        val_metrics = evaluate_regression_predictions(
+            y_true=raw_inner_valid_targets,
+            y_pred=val_predictions_raw,
+            target_names=TARGET_COLUMNS,
+            target_scales=target_scales,
+        )
+        val_combined_score = float(val_metrics["combined_score"])
+        history.append(
+            {
+                "epoch": float(epoch),
+                "train_loss": train_loss,
+                "val_loss": val_loss,
+                "val_combined_score": val_combined_score,
+            }
+        )
 
-        if val_loss + config.min_delta < best_val_loss:
+        if val_combined_score + config.min_delta < best_val_combined_score:
             best_val_loss = val_loss
+            best_val_combined_score = val_combined_score
             best_epoch = epoch
             best_state_dict = deepcopy(model.state_dict())
             epochs_without_improvement = 0
@@ -310,6 +441,7 @@ def fit_deep_sets_model(
         target_scaler=target_scaler,
         best_epoch=best_epoch,
         best_val_loss=best_val_loss,
+        best_val_combined_score=best_val_combined_score,
         train_history=history,
     )
 
@@ -344,6 +476,88 @@ def predict_deep_sets(
     return fit_artifacts.target_scaler.inverse_transform(scaled_predictions)
 
 
+def train_full_deep_sets_ensemble_and_predict(
+    prepared_data: PreparedDeepSetsData,
+    variant_name: str = WINNING_VARIANT_NAME,
+    target_strategy_name: str = WINNING_TARGET_STRATEGY_NAME,
+    seeds: list[int] | None = None,
+    config: DeepSetsConfig | None = None,
+    loss_config: LossConfig | None = None,
+    device: torch.device | None = None,
+) -> pd.DataFrame:
+    """Train the requested hybrid variant on all train scenarios and predict the test split."""
+
+    config = config or DeepSetsConfig()
+    seeds = seeds or [0, 1, 2, 3, 4]
+    variant = get_hybrid_variant_by_name(variant_name)
+    target_strategy = get_target_strategy_by_name(target_strategy_name)
+
+    train_data = prepared_data.train_data.with_targets(
+        target_strategy.transform(prepared_data.train_data.targets).astype(np.float32)
+    )
+    test_data = prepared_data.test_data
+    groups = np.asarray(train_data.scenario_ids, dtype=object)
+
+    ensemble_predictions: list[np.ndarray] = []
+    for seed in seeds:
+        fit_artifacts = fit_deep_sets_model(
+            train_data=train_data,
+            groups=groups,
+            schema=prepared_data.schema,
+            config=config,
+            variant=variant,
+            target_strategy=target_strategy,
+            raw_targets=np.asarray(prepared_data.train_data.targets, dtype=np.float32),
+            loss_config=loss_config,
+            seed=seed,
+            device=device,
+        )
+        predicted_transformed = predict_deep_sets(
+            raw_data=test_data,
+            schema=prepared_data.schema,
+            config=config,
+            variant=variant,
+            fit_artifacts=fit_artifacts,
+            batch_size=config.batch_size,
+            device=device,
+        )
+        ensemble_predictions.append(
+            target_strategy.inverse_transform(predicted_transformed).astype(np.float32)
+        )
+
+    mean_predictions = np.mean(np.stack(ensemble_predictions, axis=0), axis=0)
+    prediction_frame = pd.DataFrame(
+        {
+            "scenario_id": prepared_data.test_data.scenario_ids,
+            PREDICTION_COLUMN_MAP[TARGET_COLUMNS[0]]: mean_predictions[:, 0],
+            PREDICTION_COLUMN_MAP[TARGET_COLUMNS[1]]: mean_predictions[:, 1],
+        }
+    )
+    return prediction_frame.sort_values("scenario_id").reset_index(drop=True)
+
+
+def run_submission_preparation_and_prediction(
+    variant_name: str = WINNING_VARIANT_NAME,
+    target_strategy_name: str = WINNING_TARGET_STRATEGY_NAME,
+    seeds: list[int] | None = None,
+    config: DeepSetsConfig | None = None,
+    device: torch.device | None = None,
+) -> pd.DataFrame:
+    """Run the required preparation pipelines, then train the winning ensemble and predict test."""
+
+    run_preparation_pipeline()
+    run_feature_pipeline()
+    prepared_data = load_deep_sets_data()
+    return train_full_deep_sets_ensemble_and_predict(
+        prepared_data=prepared_data,
+        variant_name=variant_name,
+        target_strategy_name=target_strategy_name,
+        seeds=seeds,
+        config=config,
+        device=device,
+    )
+
+
 def _serialize_training_metadata(
     config: DeepSetsConfig,
     variant: HybridVariant,
@@ -356,6 +570,7 @@ def _serialize_training_metadata(
         "variant": asdict(variant),
         "best_epoch": fit_artifacts.best_epoch,
         "best_val_loss": fit_artifacts.best_val_loss,
+        "best_val_combined_score": fit_artifacts.best_val_combined_score,
     }
     return json.dumps(payload, sort_keys=True)
 
@@ -559,6 +774,8 @@ def build_deep_sets_report(
 def run_deep_sets_cv(
     prepared_data: PreparedDeepSetsData,
     config: DeepSetsConfig | None = None,
+    variants: list[HybridVariant] | None = None,
+    target_strategies: list | None = None,
     outer_splits: int = 5,
     seed: int = RANDOM_SEED,
     device: torch.device | None = None,
@@ -566,8 +783,8 @@ def run_deep_sets_cv(
     """Run grouped CV for hybrid Deep Sets v2 across variants and target strategies."""
 
     config = config or DeepSetsConfig()
-    target_strategies = build_target_strategies()
-    variants = build_hybrid_variants()
+    target_strategies = target_strategies or build_target_strategies()
+    variants = variants or build_hybrid_variants()
     train_data = prepared_data.train_data
     groups = np.asarray(train_data.scenario_ids, dtype=object)
     outer_cv = GroupKFold(n_splits=outer_splits, shuffle=True, random_state=seed)
@@ -601,6 +818,8 @@ def run_deep_sets_cv(
                     schema=prepared_data.schema,
                     config=config,
                     variant=variant,
+                    target_strategy=target_strategy,
+                    raw_targets=y_train_raw,
                     seed=seed + fold_index,
                     device=device,
                 )

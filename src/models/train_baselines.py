@@ -140,7 +140,17 @@ def build_target_strategies() -> list[TargetStrategy]:
 
     def _viscosity_sinh(values: np.ndarray) -> np.ndarray:
         restored = np.asarray(values, dtype=float).copy()
-        restored[:, 0] = np.sinh(np.clip(restored[:, 0], -10.0, 10.0))
+        restored[:, 0] = np.sinh(restored[:, 0])
+        return restored
+
+    def _viscosity_log1p_signed(values: np.ndarray) -> np.ndarray:
+        transformed = np.asarray(values, dtype=float).copy()
+        transformed[:, 0] = np.sign(transformed[:, 0]) * np.log1p(np.abs(transformed[:, 0]))
+        return transformed
+
+    def _viscosity_expm1_signed(values: np.ndarray) -> np.ndarray:
+        restored = np.asarray(values, dtype=float).copy()
+        restored[:, 0] = np.sign(restored[:, 0]) * np.expm1(np.abs(restored[:, 0]))
         return restored
 
     return [
@@ -155,6 +165,12 @@ def build_target_strategies() -> list[TargetStrategy]:
             description="Train viscosity on asinh scale while keeping oxidation unchanged.",
             transform=_viscosity_asinh,
             inverse_transform=_viscosity_sinh,
+        ),
+        TargetStrategy(
+            name="viscosity_log1p_signed",
+            description="Train viscosity on signed log1p scale while keeping oxidation unchanged.",
+            transform=_viscosity_log1p_signed,
+            inverse_transform=_viscosity_expm1_signed,
         ),
     ]
 
