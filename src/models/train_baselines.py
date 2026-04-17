@@ -36,6 +36,24 @@ from src.eval.metrics import compute_target_scales, evaluate_regression_predicti
 VISCOSITY_TARGET = "target_delta_kinematic_viscosity_pct"
 OXIDATION_TARGET = "target_oxidation_eot_a_per_cm"
 TARGET_COLUMNS = [VISCOSITY_TARGET, OXIDATION_TARGET]
+FEATURE_SETTING_TO_GROUPS = {
+    "conditions_only": ["scenario_conditions"],
+    "conditions_structure": ["scenario_conditions", "structure_and_mass"],
+    "conditions_structure_family": ["scenario_conditions", "structure_and_mass", "component_families"],
+    "conditions_structure_family_coverage": [
+        "scenario_conditions",
+        "structure_and_mass",
+        "component_families",
+        "coverage_and_missingness",
+    ],
+    "full_feature_set": [
+        "scenario_conditions",
+        "structure_and_mass",
+        "component_families",
+        "coverage_and_missingness",
+        "weighted_numeric_properties",
+    ],
+}
 
 
 @dataclass(frozen=True)
@@ -123,8 +141,26 @@ def load_test_feature_table(path: Path = TEST_SCENARIO_FEATURES_OUTPUT_PATH) -> 
 
     frame = pd.read_csv(path)
     feature_columns = [column for column in frame.columns if column != "scenario_id"]
-    frame.loc[:, feature_columns] = frame.loc[:, feature_columns].astype(float)
+    frame = frame.astype({column: float for column in feature_columns}, copy=False)
     return frame
+
+
+def select_baseline_feature_columns(
+    prepared_data: PreparedBaselineData,
+    feature_setting: str,
+) -> list[str]:
+    """Return one named feature subset from the saved manifest."""
+
+    if feature_setting not in FEATURE_SETTING_TO_GROUPS:
+        raise KeyError(f"Unknown baseline feature setting: {feature_setting}")
+
+    manifest = prepared_data.feature_manifest["feature_group_columns"]
+    columns: list[str] = []
+    for group_name in FEATURE_SETTING_TO_GROUPS[feature_setting]:
+        if group_name not in manifest:
+            raise KeyError(f"Missing feature group `{group_name}` in manifest.")
+        columns.extend(manifest[group_name])
+    return list(dict.fromkeys(columns))
 
 
 def build_target_strategies() -> list[TargetStrategy]:

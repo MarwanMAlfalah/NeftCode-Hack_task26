@@ -29,6 +29,7 @@ from src.models.train_baselines import (
     get_model_spec_by_name,
     get_target_strategy_by_name as get_baseline_target_strategy_by_name,
     load_baseline_training_data,
+    select_baseline_feature_columns,
 )
 from src.models.train_deep_sets import (
     DeepSetsConfig,
@@ -73,29 +74,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def _select_baseline_columns(prepared_data: PreparedBaselineData, feature_setting: str) -> list[str]:
-    manifest = prepared_data.feature_manifest["feature_group_columns"]
-    setting_to_groups = {
-        "conditions_only": ["scenario_conditions"],
-        "conditions_structure": ["scenario_conditions", "structure_and_mass"],
-        "conditions_structure_family": ["scenario_conditions", "structure_and_mass", "component_families"],
-        "conditions_structure_family_coverage": [
-            "scenario_conditions",
-            "structure_and_mass",
-            "component_families",
-            "coverage_and_missingness",
-        ],
-        "full_feature_set": [
-            "scenario_conditions",
-            "structure_and_mass",
-            "component_families",
-            "coverage_and_missingness",
-            "weighted_numeric_properties",
-        ],
-    }
-    columns: list[str] = []
-    for group_name in setting_to_groups[feature_setting]:
-        columns.extend(manifest[group_name])
-    return list(dict.fromkeys(columns))
+    return select_baseline_feature_columns(prepared_data=prepared_data, feature_setting=feature_setting)
 
 
 def collect_oof_predictions(
