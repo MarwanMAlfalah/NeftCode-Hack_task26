@@ -11,13 +11,13 @@ If someone needs the shortest path to the final answer, start here:
 ## Official Final Submission
 
 - Locked final ZIP:
-  - `outputs/submissions/neftekod_dot_submission_meta_blend_v1.zip`
+  - `outputs/submissions/neftekod_dot_submission_gp_stage2_meta_runnerup_current_stack_only_oxidation.zip`
 - Locked final predictions:
-  - `outputs/submissions/neftekod_dot_submission_gp_stage2_meta_blend_visc_stage15+gp_matern_white+current_stack+stack_matern_white_dot_ox_current_stack+stack_matern_white_dot/predictions.csv`
+  - `outputs/submissions/neftekod_dot_submission_gp_stage2_meta_runnerup_current_stack_only_oxidation/predictions.csv`
 - Locked best confirmed live score:
   - `0.104084`
 - Submission lineage:
-  - `submission #7`, current live meta-lineage winner
+  - `submission #7`, true winning meta-family runner-up candidate
 
 ## Judge-Facing Documents
 
@@ -85,6 +85,10 @@ These are useful for audit trail, but should not be the first documents handed t
   - historical valid anchor, not the final locked winner
 - `outputs/submissions/neftekod_dot_submission_stage15_huber_fixedmetric.zip`
   - important intermediate milestone, not the final locked winner
+- `outputs/submissions/neftekod_dot_submission_meta_blend_v1.zip`
+  - earlier `#6 = 0.104614` lineage, not the final locked winner
+- `outputs/submissions/neftekod_dot_team_final_upload.zip`
+  - mistaken alias of the `#6` lineage, not the final locked winner
 - other GP/meta, Huber, chemistry-gate, and blend ZIPs in `outputs/submissions/`
   - challenger artifacts only
 
@@ -92,6 +96,6 @@ These are useful for audit trail, but should not be the first documents handed t
 
 For final delivery work:
 
-- use the locked meta-lineage ZIP
+- use the locked `#7` runner-up ZIP
 - use the new `final_*` docs
 - treat older exploratory reports as background only

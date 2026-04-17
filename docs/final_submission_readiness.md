@@ -2,9 +2,9 @@
 
 ## Locked Artifact
 
-- Final official ZIP: `outputs/submissions/neftekod_dot_submission_meta_blend_v1.zip`
-- Final official CSV lineage file: `outputs/submissions/neftekod_dot_submission_gp_stage2_meta_blend_visc_stage15+gp_matern_white+current_stack+stack_matern_white_dot_ox_current_stack+stack_matern_white_dot/predictions.csv`
-- Submission lineage: `submission #7`, current live meta-lineage winner
+- Final official ZIP: `outputs/submissions/neftekod_dot_submission_gp_stage2_meta_runnerup_current_stack_only_oxidation.zip`
+- Final official CSV lineage file: `outputs/submissions/neftekod_dot_submission_gp_stage2_meta_runnerup_current_stack_only_oxidation/predictions.csv`
+- Submission lineage: `submission #7`, true winning meta-family runner-up candidate
 - Official best score: `0.104084`
 - Shipping status: `frozen`
 
