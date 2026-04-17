@@ -130,13 +130,17 @@ def validate_bundle(zip_path: Path) -> dict[str, object]:
     }
 
 
-def build_bundle(zip_name: str = DEFAULT_ZIP_NAME) -> Path:
-    """Assemble the official root-level bundle and write a final ZIP."""
+def build_bundle_from_predictions(
+    predictions_path: Path,
+    zip_name: str,
+    notebook_path: Path = NOTEBOOK_PATH,
+) -> Path:
+    """Assemble a root-level bundle from a specific predictions CSV."""
 
-    predictions_info = validate_predictions_csv(PREDICTIONS_PATH)
-    if not NOTEBOOK_PATH.exists():
-        raise FileNotFoundError(f"Missing notebook: {NOTEBOOK_PATH}")
-    _assert_ascii_name(NOTEBOOK_PATH)
+    predictions_info = validate_predictions_csv(predictions_path)
+    if not notebook_path.exists():
+        raise FileNotFoundError(f"Missing notebook: {notebook_path}")
+    _assert_ascii_name(notebook_path)
 
     if not zip_name.lower().endswith(".zip"):
         raise ValueError("Final bundle filename must end with .zip")
@@ -151,8 +155,8 @@ def build_bundle(zip_name: str = DEFAULT_ZIP_NAME) -> Path:
     with tempfile.TemporaryDirectory() as temp_dir:
         bundle_dir = Path(temp_dir) / "bundle"
         bundle_dir.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(PREDICTIONS_PATH, bundle_dir / "predictions.csv")
-        shutil.copy2(NOTEBOOK_PATH, bundle_dir / "inference.ipynb")
+        shutil.copy2(predictions_path, bundle_dir / "predictions.csv")
+        shutil.copy2(notebook_path, bundle_dir / "inference.ipynb")
 
         with ZipFile(final_zip_path, "w", compression=ZIP_DEFLATED) as archive:
             archive.write(bundle_dir / "predictions.csv", arcname="predictions.csv")
@@ -162,6 +166,16 @@ def build_bundle(zip_name: str = DEFAULT_ZIP_NAME) -> Path:
     print(f"predictions_rows: {predictions_info['row_count']}")
     print(f"submission_zip: {final_zip_path}")
     return final_zip_path
+
+
+def build_bundle(zip_name: str = DEFAULT_ZIP_NAME) -> Path:
+    """Assemble the official root-level bundle and write a final ZIP."""
+
+    return build_bundle_from_predictions(
+        predictions_path=PREDICTIONS_PATH,
+        zip_name=zip_name,
+        notebook_path=NOTEBOOK_PATH,
+    )
 
 
 def parse_args() -> argparse.Namespace:

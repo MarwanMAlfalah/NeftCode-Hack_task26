@@ -38,6 +38,7 @@ from src.models.deep_sets import (
     set_torch_seed,
 )
 from src.models.train_baselines import (
+    GroupedCVArtifacts,
     OXIDATION_TARGET,
     TARGET_COLUMNS,
     VISCOSITY_TARGET,
@@ -82,6 +83,7 @@ class HybridVariant:
 
     name: str
     use_component_embedding: bool
+    use_tabular_branch: bool = True
 
 
 @dataclass(frozen=True)
@@ -261,7 +263,7 @@ def build_model(
         fusion_hidden_dim=config.fusion_hidden_dim,
         dropout=config.dropout,
         use_component_embedding=variant.use_component_embedding,
-        use_tabular_branch=True,
+        use_tabular_branch=variant.use_tabular_branch,
     )
 
 
@@ -490,6 +492,30 @@ def train_full_deep_sets_ensemble_and_predict(
     config = config or DeepSetsConfig()
     seeds = seeds or [0, 1, 2, 3, 4]
     variant = get_hybrid_variant_by_name(variant_name)
+    return train_full_deep_sets_variant_ensemble_and_predict(
+        prepared_data=prepared_data,
+        variant=variant,
+        target_strategy_name=target_strategy_name,
+        seeds=seeds,
+        config=config,
+        loss_config=loss_config,
+        device=device,
+    )
+
+
+def train_full_deep_sets_variant_ensemble_and_predict(
+    prepared_data: PreparedDeepSetsData,
+    variant: HybridVariant,
+    target_strategy_name: str = WINNING_TARGET_STRATEGY_NAME,
+    seeds: list[int] | None = None,
+    config: DeepSetsConfig | None = None,
+    loss_config: LossConfig | None = None,
+    device: torch.device | None = None,
+) -> pd.DataFrame:
+    """Train one explicit Deep Sets variant on all train scenarios and predict the test split."""
+
+    config = config or DeepSetsConfig()
+    seeds = seeds or [0, 1, 2, 3, 4]
     target_strategy = get_target_strategy_by_name(target_strategy_name)
 
     train_data = prepared_data.train_data.with_targets(
@@ -534,6 +560,120 @@ def train_full_deep_sets_ensemble_and_predict(
         }
     )
     return prediction_frame.sort_values("scenario_id").reset_index(drop=True)
+
+
+def evaluate_single_deep_sets_configuration(
+    prepared_data: PreparedDeepSetsData,
+    config: DeepSetsConfig,
+    variant: HybridVariant,
+    target_strategy,
+    outer_splits: int = 5,
+    seed: int = RANDOM_SEED,
+    loss_config: LossConfig | None = None,
+    device: torch.device | None = None,
+    extra_metadata: dict[str, object] | None = None,
+) -> GroupedCVArtifacts:
+    """Run grouped outer CV for one Deep Sets configuration and return OOF predictions."""
+
+    train_data = prepared_data.train_data
+    groups = np.asarray(train_data.scenario_ids, dtype=object)
+    outer_cv = GroupKFold(n_splits=outer_splits, shuffle=True, random_state=seed)
+    metadata = extra_metadata or {}
+
+    fold_records: list[dict[str, object]] = []
+    prediction_records: list[dict[str, object]] = []
+
+    for fold_index, (train_index, valid_index) in enumerate(
+        outer_cv.split(np.zeros(len(groups)), groups=groups),
+        start=1,
+    ):
+        raw_train_fold = train_data.subset(train_index)
+        raw_valid_fold = train_data.subset(valid_index)
+        y_train_raw = raw_train_fold.targets.astype(np.float32)
+        y_valid_raw = raw_valid_fold.targets.astype(np.float32)
+        target_scales = compute_target_scales(y_train_raw, TARGET_COLUMNS)
+
+        transformed_train_fold = raw_train_fold.with_targets(
+            target_strategy.transform(y_train_raw).astype(np.float32)
+        )
+        transformed_valid_fold = raw_valid_fold.with_targets(
+            target_strategy.transform(y_valid_raw).astype(np.float32)
+        )
+
+        start_time = time.perf_counter()
+        fit_artifacts = fit_deep_sets_model(
+            train_data=transformed_train_fold,
+            groups=groups[train_index],
+            schema=prepared_data.schema,
+            config=config,
+            variant=variant,
+            target_strategy=target_strategy,
+            raw_targets=y_train_raw,
+            seed=seed + fold_index,
+            loss_config=loss_config,
+            device=device,
+        )
+        fit_time = time.perf_counter() - start_time
+
+        valid_predictions_transformed = predict_deep_sets(
+            raw_data=transformed_valid_fold,
+            schema=prepared_data.schema,
+            config=config,
+            variant=variant,
+            fit_artifacts=fit_artifacts,
+            batch_size=config.batch_size,
+            device=device,
+        )
+        valid_predictions_raw = target_strategy.inverse_transform(valid_predictions_transformed)
+        metrics = evaluate_regression_predictions(
+            y_true=y_valid_raw,
+            y_pred=valid_predictions_raw,
+            target_names=TARGET_COLUMNS,
+            target_scales=target_scales,
+        )
+
+        fold_record = {
+            "fold_index": fold_index,
+            "model_name": variant.name,
+            "target_strategy": target_strategy.name,
+            "n_train": len(train_index),
+            "n_valid": len(valid_index),
+            "fit_time_seconds": fit_time,
+            "best_inner_cv_score": fit_artifacts.best_val_loss,
+            "best_params_json": _serialize_training_metadata(
+                config=config,
+                variant=variant,
+                fit_artifacts=fit_artifacts,
+            ),
+            "best_epoch": fit_artifacts.best_epoch,
+            "viscosity_scale": target_scales[VISCOSITY_TARGET],
+            "oxidation_scale": target_scales[OXIDATION_TARGET],
+            **metadata,
+        }
+        fold_record.update(metrics)
+        fold_records.append(fold_record)
+
+        for row_offset, scenario_id in enumerate(raw_valid_fold.scenario_ids):
+            prediction_records.append(
+                {
+                    "fold_index": fold_index,
+                    "model_name": variant.name,
+                    "target_strategy": target_strategy.name,
+                    "scenario_id": scenario_id,
+                    f"{VISCOSITY_TARGET}__true": y_valid_raw[row_offset, 0],
+                    f"{VISCOSITY_TARGET}__pred": valid_predictions_raw[row_offset, 0],
+                    f"{OXIDATION_TARGET}__true": y_valid_raw[row_offset, 1],
+                    f"{OXIDATION_TARGET}__pred": valid_predictions_raw[row_offset, 1],
+                    "viscosity_scale": target_scales[VISCOSITY_TARGET],
+                    "oxidation_scale": target_scales[OXIDATION_TARGET],
+                    **metadata,
+                }
+            )
+
+    return GroupedCVArtifacts(
+        fold_metrics=pd.DataFrame.from_records(fold_records),
+        oof_predictions=pd.DataFrame.from_records(prediction_records),
+    )
 
 
 def run_submission_preparation_and_prediction(
